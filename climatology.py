@@ -286,6 +286,8 @@ def compute_monthly_climatology(variable, months_by_phase, output_prefix, datase
     ds[time_name] = pd.to_datetime(ds[time_name].values)
 
     for month in range(1, 13):
+        if variable=="RH600":
+            ds = ds.isel(pressure_level=0)
         pooled = ds[var_name].sel({time_name: ds[time_name].dt.month == month}).mean(time_name, skipna=True).values
         np.savetxt(op.join(local_path, f'Monthly_mean_{output_prefix}_{month}.txt'), pooled)
         for phase in ["LN", "NEU", "EN"]:
