@@ -158,22 +158,26 @@ def Change_genesis_locations_STORM():
 def Change_genesis_locations(idx_basin,months):
 
     basin_name=['EP','NA','NI','SI','SP','WP']
-    monthsall={'EP':months[0],'NA':months[1],'NI':months[2],'SI':months[3],'SP':months[4],'WP':months[5]}    
+    monthsall={'EP':months[0],'NA':months[1],'NI':months[2],'SI':months[3],'SP':months[4],'WP':months[5]}
 
     locations=np.load(os.path.join(__location__,'GEN_LOC.npy'),allow_pickle=True,encoding='latin1').item()
+    locations_phase = None
+    phase_path = os.path.join(__location__,'GEN_LOC_PHASE.npy')
+    if os.path.exists(phase_path):
+        locations_phase = np.load(phase_path, allow_pickle=True, encoding='latin1').item()
 
     for ii in range(len(idx_basin)):
-
         idx=idx_basin[ii]
         basin=basin_name[idx]
         for month in monthsall[basin]:
             print('genesis grid for basin ',basin, 'and month ',month)
-
-            genesis_grids=[]
-            matrix_dict=[]
             matrix_dict=create_5deg_grid(locations[idx],month,basin)
             genesis_grids=create_1deg_grid(matrix_dict,basin,month)
             np.savetxt(os.path.join(__location__,'GRID_GENESIS_MATRIX_{}_{}.txt'.format(idx,month)),genesis_grids)
-            del matrix_dict,genesis_grids
-            
-            
+            if locations_phase is not None:
+                for phase in ['LN','NEU','EN']:
+                    phase_loc = {idx: {month: locations_phase[idx][month][phase]}}
+                    matrix_dict_phase = create_5deg_grid(phase_loc[idx], month, basin)
+                    genesis_phase = create_1deg_grid(matrix_dict_phase, basin, month)
+                    np.savetxt(os.path.join(__location__,'GRID_GENESIS_MATRIX_{}_{}_{}.txt'.format(idx,month,phase)), genesis_phase)
+
