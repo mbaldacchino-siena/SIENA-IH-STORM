@@ -348,7 +348,9 @@ def build_pooled_and_phase_climatologies(period, climate_index='ONI', threshold=
             download_humidity_data(local_path, year_list)
         except Exception as exc:
             print(f'Warning: VWS/RH downloads failed: {exc}')
-    get_climate_index(f'https://psl.noaa.gov/data/correlation/{climate_index}.data', local_path)
+
+        
+    get_climate_index(f'https://psl.noaa.gov/data/correlation/{climate_index.lower()}.data', local_path)
     climate_df = pd.read_csv(op.join(local_path, 'climate_index.csv'))
     climate_df = climate_df[(climate_df['year'] >= period[0]) & (climate_df['year'] <= period[1])]
     climate_df = add_phase_labels(climate_df, positive_threshold=abs(threshold), negative_threshold=-abs(threshold))
