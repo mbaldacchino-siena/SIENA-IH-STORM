@@ -1,222 +1,47 @@
 # -*- coding: utf-8 -*-
-"""
-@author: Nadia Bloemendaal, nadia.bloemendaal@vu.nl
-
-For more information, please see 
-Bloemendaal, N., Haigh, I.D., de Moel, H. et al. 
-Generation of a global synthetic tropical cyclone hazard dataset using STORM. 
-Sci Data 7, 40 (2020). https://doi.org/10.1038/s41597-020-0381-2
-
-This is the STORM model master program
-
-Copyright (C) 2020 Nadia Bloemendaal. All versions released under the GNU General Public License v3.0.
-"""
-
+"""SIENA-IH-STORM generation entry point with phase argument."""
+import argparse
 import numpy as np
-
-#Custom made modules
+import os
+import time
 from SELECT_BASIN import Basins_WMO
 from SAMPLE_STARTING_POINT import Startingpoint
 from SAMPLE_TC_MOVEMENT import TC_movement
 from SAMPLE_TC_PRESSURE import TC_pressure
+import import_data
 
-import os
-import sys
-dir_path=os.path.dirname(os.path.realpath(sys.argv[0]))
+dir_path=os.path.dirname(os.path.realpath(__file__))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
-import time
-start_time=time.time()
 
-#==============================================================================
-# Step 1: Define basin and number of years to run
-#==============================================================================
-#please set basin (EP,NA,NI,SI,SP,WP)
-basin='NI'
-loop=1 #ranges between 0 and 9 to simulate slices of 1000 years
-total_years=1000 #set the total number of years you'd like to simulate
+def run_for_basin(basin, total_years, loop, phase):
+    for nloop in range(loop):
+        print('basin:', basin, 'phase:', phase, nloop)
+        TC_data=[]
+        for year in range(total_years):
+            storms_per_year,genesis_month,lat0,lat1,lon0,lon1=Basins_WMO(basin, phase=phase)
+            if storms_per_year>0:
+                lon_genesis_list,lat_genesis_list=Startingpoint(storms_per_year,genesis_month,basin, phase=phase)
+                latlist,lonlist,landfalllist=TC_movement(lon_genesis_list,lat_genesis_list,basin, phase=phase)
+                TC_data=TC_pressure(basin,latlist,lonlist,landfalllist,year,storms_per_year,genesis_month,TC_data, phase=phase)
+        TC_data=np.array(TC_data)
+        out = f'STORM_DATA_IBTRACS_{basin}_{phase}_{total_years}_YEARS_{nloop}.txt'
+        np.savetxt(os.path.join(__location__, out), TC_data, fmt='%5s', delimiter=',')
 
-for nloop in range(0,loop):
-    print ('basin:',basin, nloop)
-    TC_data=[] #This list is composed of: [year,storm number,lat,lon,pressure,wind,rmax,category,Holland B parameter,precipitation,landfall flag]
-    #==============================================================================
-    #     Step 2: load grid with weighted genesis counts
-    #==============================================================================
-    for year in range(0,total_years):
-        storms_per_year,genesis_month,lat0,lat1,lon0,lon1=Basins_WMO(basin) 
 
-        if storms_per_year>0:
-                #==============================================================================
-                # Step 3: Generate (list of) genesis locations
-                #==============================================================================
-                lon_genesis_list,lat_genesis_list=Startingpoint(storms_per_year,genesis_month,basin) 
-                #==============================================================================
-                # Step 4: Generate initial conditions    
-                #==============================================================================
-                latlist,lonlist,landfalllist=TC_movement(lon_genesis_list,lat_genesis_list,basin)
-                TC_data=TC_pressure(basin,latlist,lonlist,landfalllist,year,storms_per_year,genesis_month,TC_data)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--phase', default=None, choices=['LN','NEU','EN', None], help='ENSO phase to generate')
+    parser.add_argument('--years', type=int, default=1000)
+    parser.add_argument('--loop', type=int, default=1)
+    parser.add_argument('--basins', nargs='*', default=['EP','NA','NI','SI','SP','WP'])
+    args = parser.parse_args()
+    *_, generation_phase = import_data.input_data('input.dat')
+    phase = args.phase or generation_phase
+    start_time=time.time()
+    for basin in args.basins:
+        run_for_basin(basin, args.years, args.loop, phase)
+    print('Elapsed:', time.time()-start_time)
 
-    TC_data=np.array(TC_data)
-    np.savetxt(os.path.join(__location__,'STORM_DATA_IBTRACS_'+str(basin)+'_'+str(total_years)+'_YEARS_'+str(nloop)+'.txt'),TC_data,fmt='%5s',delimiter=',')
-    
-    
-    
-    #please set basin (EP,NA,NI,SI,SP,WP)
-basin='NA'
-for nloop in range(0,loop):
-    print ('basin:',basin, nloop)
-    TC_data=[] #This list is composed of: [year,storm number,lat,lon,pressure,wind,rmax,category,Holland B parameter,precipitation,landfall flag]
-    #==============================================================================
-    #     Step 2: load grid with weighted genesis counts
-    #==============================================================================
-    for year in range(0,total_years):
-        storms_per_year,genesis_month,lat0,lat1,lon0,lon1=Basins_WMO(basin) 
-
-        if storms_per_year>0:
-                #==============================================================================
-                # Step 3: Generate (list of) genesis locations
-                #==============================================================================
-                lon_genesis_list,lat_genesis_list=Startingpoint(storms_per_year,genesis_month,basin) 
-                #==============================================================================
-                # Step 4: Generate initial conditions    
-                #==============================================================================
-                latlist,lonlist,landfalllist=TC_movement(lon_genesis_list,lat_genesis_list,basin)
-                TC_data=TC_pressure(basin,latlist,lonlist,landfalllist,year,storms_per_year,genesis_month,TC_data)
-
-    TC_data=np.array(TC_data)
-    np.savetxt(os.path.join(__location__,'STORM_DATA_IBTRACS_'+str(basin)+'_'+str(total_years)+'_YEARS_'+str(nloop)+'.txt'),TC_data,fmt='%5s',delimiter=',')
-    
-    
-    
-        #please set basin (EP,NA,NI,SI,SP,WP)
-basin='NI'
-for nloop in range(0,loop):
-    print ('basin:',basin, nloop)
-    TC_data=[] #This list is composed of: [year,storm number,lat,lon,pressure,wind,rmax,category,Holland B parameter,precipitation,landfall flag]
-    #==============================================================================
-    #     Step 2: load grid with weighted genesis counts
-    #==============================================================================
-    for year in range(0,total_years):
-        storms_per_year,genesis_month,lat0,lat1,lon0,lon1=Basins_WMO(basin) 
-
-        if storms_per_year>0:
-                #==============================================================================
-                # Step 3: Generate (list of) genesis locations
-                #==============================================================================
-                lon_genesis_list,lat_genesis_list=Startingpoint(storms_per_year,genesis_month,basin) 
-                #==============================================================================
-                # Step 4: Generate initial conditions    
-                #==============================================================================
-                latlist,lonlist,landfalllist=TC_movement(lon_genesis_list,lat_genesis_list,basin)
-                TC_data=TC_pressure(basin,latlist,lonlist,landfalllist,year,storms_per_year,genesis_month,TC_data)
-
-    TC_data=np.array(TC_data)
-    np.savetxt(os.path.join(__location__,'STORM_DATA_IBTRACS_'+str(basin)+'_'+str(total_years)+'_YEARS_'+str(nloop)+'.txt'),TC_data,fmt='%5s',delimiter=',')
-    
-    
-            #please set basin (EP,NA,NI,SI,SP,WP)
-basin='SI'
-for nloop in range(0,loop):
-    print ('basin:',basin, nloop)
-    TC_data=[] #This list is composed of: [year,storm number,lat,lon,pressure,wind,rmax,category,Holland B parameter,precipitation,landfall flag]
-    #==============================================================================
-    #     Step 2: load grid with weighted genesis counts
-    #==============================================================================
-    for year in range(0,total_years):
-        storms_per_year,genesis_month,lat0,lat1,lon0,lon1=Basins_WMO(basin) 
-
-        if storms_per_year>0:
-                #==============================================================================
-                # Step 3: Generate (list of) genesis locations
-                #==============================================================================
-                lon_genesis_list,lat_genesis_list=Startingpoint(storms_per_year,genesis_month,basin) 
-                #==============================================================================
-                # Step 4: Generate initial conditions    
-                #==============================================================================
-                latlist,lonlist,landfalllist=TC_movement(lon_genesis_list,lat_genesis_list,basin)
-                TC_data=TC_pressure(basin,latlist,lonlist,landfalllist,year,storms_per_year,genesis_month,TC_data)
-
-    TC_data=np.array(TC_data)
-    np.savetxt(os.path.join(__location__,'STORM_DATA_IBTRACS_'+str(basin)+'_'+str(total_years)+'_YEARS_'+str(nloop)+'.txt'),TC_data,fmt='%5s',delimiter=',')
-    
-    
-    
-                #please set basin (EP,NA,NI,SI,SP,WP)
-basin='NI'
-for nloop in range(0,loop):
-    print ('basin:',basin, nloop)
-    TC_data=[] #This list is composed of: [year,storm number,lat,lon,pressure,wind,rmax,category,Holland B parameter,precipitation,landfall flag]
-    #==============================================================================
-    #     Step 2: load grid with weighted genesis counts
-    #==============================================================================
-    for year in range(0,total_years):
-        storms_per_year,genesis_month,lat0,lat1,lon0,lon1=Basins_WMO(basin) 
-
-        if storms_per_year>0:
-                #==============================================================================
-                # Step 3: Generate (list of) genesis locations
-                #==============================================================================
-                lon_genesis_list,lat_genesis_list=Startingpoint(storms_per_year,genesis_month,basin) 
-                #==============================================================================
-                # Step 4: Generate initial conditions    
-                #==============================================================================
-                latlist,lonlist,landfalllist=TC_movement(lon_genesis_list,lat_genesis_list,basin)
-                TC_data=TC_pressure(basin,latlist,lonlist,landfalllist,year,storms_per_year,genesis_month,TC_data)
-
-    TC_data=np.array(TC_data)
-    np.savetxt(os.path.join(__location__,'STORM_DATA_IBTRACS_'+str(basin)+'_'+str(total_years)+'_YEARS_'+str(nloop)+'.txt'),TC_data,fmt='%5s',delimiter=',')
-    
-    
-    
-                    #please set basin (EP,NA,NI,SI,SP,WP)
-basin='SP'
-for nloop in range(0,loop):
-    print ('basin:',basin, nloop)
-    TC_data=[] #This list is composed of: [year,storm number,lat,lon,pressure,wind,rmax,category,Holland B parameter,precipitation,landfall flag]
-    #==============================================================================
-    #     Step 2: load grid with weighted genesis counts
-    #==============================================================================
-    for year in range(0,total_years):
-        storms_per_year,genesis_month,lat0,lat1,lon0,lon1=Basins_WMO(basin) 
-
-        if storms_per_year>0:
-                #==============================================================================
-                # Step 3: Generate (list of) genesis locations
-                #==============================================================================
-                lon_genesis_list,lat_genesis_list=Startingpoint(storms_per_year,genesis_month,basin) 
-                #==============================================================================
-                # Step 4: Generate initial conditions    
-                #==============================================================================
-                latlist,lonlist,landfalllist=TC_movement(lon_genesis_list,lat_genesis_list,basin)
-                TC_data=TC_pressure(basin,latlist,lonlist,landfalllist,year,storms_per_year,genesis_month,TC_data)
-
-    TC_data=np.array(TC_data)
-    np.savetxt(os.path.join(__location__,'STORM_DATA_IBTRACS_'+str(basin)+'_'+str(total_years)+'_YEARS_'+str(nloop)+'.txt'),TC_data,fmt='%5s',delimiter=',')
-    
-    
-    
-    
-                        #please set basin (EP,NA,NI,SI,SP,WP)
-basin='WP'
-for nloop in range(0,loop):
-    print ('basin:',basin, nloop)
-    TC_data=[] #This list is composed of: [year,storm number,lat,lon,pressure,wind,rmax,category,Holland B parameter,precipitation,landfall flag]
-    #==============================================================================
-    #     Step 2: load grid with weighted genesis counts
-    #==============================================================================
-    for year in range(0,total_years):
-        storms_per_year,genesis_month,lat0,lat1,lon0,lon1=Basins_WMO(basin) 
-
-        if storms_per_year>0:
-                #==============================================================================
-                # Step 3: Generate (list of) genesis locations
-                #==============================================================================
-                lon_genesis_list,lat_genesis_list=Startingpoint(storms_per_year,genesis_month,basin) 
-                #==============================================================================
-                # Step 4: Generate initial conditions    
-                #==============================================================================
-                latlist,lonlist,landfalllist=TC_movement(lon_genesis_list,lat_genesis_list,basin)
-                TC_data=TC_pressure(basin,latlist,lonlist,landfalllist,year,storms_per_year,genesis_month,TC_data)
-
-    TC_data=np.array(TC_data)
-    np.savetxt(os.path.join(__location__,'STORM_DATA_IBTRACS_'+str(basin)+'_'+str(total_years)+'_YEARS_'+str(nloop)+'.txt'),TC_data,fmt='%5s',delimiter=',')
+if __name__ == '__main__':
+    main()
