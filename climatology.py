@@ -134,6 +134,8 @@ def climatology_data(year):
 
     download_monthly_mean_SLP(local_path,year_list)
     download_monthly_mean_SST(local_path,year_list)
+    download_humidity_data(local_path, year_list)
+    download_wind_shear_data(local_path, year_list)
 
     # download data from IBTrACS
     file_name='/IBTrACS.ALL.v04r00.nc'
@@ -354,12 +356,18 @@ def build_pooled_and_phase_climatologies(period, climate_index='ONI', threshold=
     climate_df = pd.read_csv(op.join(local_path, 'climate_index.csv'))
     climate_df = climate_df[(climate_df['year'] >= period[0]) & (climate_df['year'] <= period[1])]
     climate_df = add_phase_labels(climate_df, positive_threshold=abs(threshold), negative_threshold=-abs(threshold))
+    print("Phase labels done")
     save_phase_table(climate_df, local_path)
     months_by_phase = get_months_by_phase(climate_df, period[0], period[1])
+    print("Get months by phase done")
     compute_monthly_climatology('SST', months_by_phase, 'SST')
+    print("Compute monthly SST done")
     compute_monthly_climatology('MSLP', months_by_phase, 'MSLP')
+    print("Compute MSLP done")
     if op.exists(op.join(local_path, 'Monthly_mean_VWS.nc')):
         compute_monthly_climatology('VWS', months_by_phase, 'VWS')
+        print("VWS done")
     if op.exists(op.join(local_path, 'Monthly_mean_RH600.nc')):
         compute_monthly_climatology('RH600', months_by_phase, 'RH600')
+        print("RH done")
     return climate_df
