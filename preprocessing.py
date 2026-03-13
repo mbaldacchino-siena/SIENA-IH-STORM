@@ -285,9 +285,11 @@ def extract_data(data, final_year):
     np.save(os.path.join(dir_path,'BASINLIST_INTERP.npy'),basinlist)
     np.save(os.path.join(dir_path,'YEARLIST_INTERP.npy'),yearlist)
 
-def TC_variables(nyear,monthsall):
+def TC_variables(nyear, monthsall, oni_table=None, vws_fields=None, rh_fields=None, latitudes=None, longitudes=None):
     """
-    Extract the important variables. 
+    Extract the important variables.
+    SIENA extension: keep all storms pooled, add ENSO phase/year and co-located
+    VWS/RH for track and pressure variables.
     """
     try:
         latlist=np.load(os.path.join(__location__,'LATLIST_INTERP.npy'),allow_pickle=True).item()
@@ -297,112 +299,158 @@ def TC_variables(nyear,monthsall):
         rmaxlist=np.load(os.path.join(__location__,'RMAXLIST_INTERP.npy'),allow_pickle=True).item()
         monthlist=np.load(os.path.join(__location__,'MONTHLIST_INTERP.npy'),allow_pickle=True).item()
         basinlist=np.load(os.path.join(__location__,'BASINLIST_INTERP.npy'),allow_pickle=True).item()
+        yearlist=np.load(os.path.join(__location__,'YEARLIST_INTERP.npy'),allow_pickle=True).item()
     except FileNotFoundError:
         print('Files do not exist in '+str(__location__)+', please check directory')
-        return 
-    
-    #monthsall=[[6,7,8,9,10,11],[6,7,8,9,10,11],[4,5,6,9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
-   
+        return
+
+    from siena_utils import build_phase_lookup, nearest_env_value
+    phase_lookup = build_phase_lookup(oni_table)
+
+    if latitudes is None or longitudes is None:
+        try:
+            ds = xr.open_dataset(os.path.join(__location__, 'Monthly_mean_SST.nc'))
+            latitudes = ds.latitude.values
+            longitudes = ds.longitude.values
+            ds.close()
+        except Exception:
+            latitudes = np.linspace(90, -90, 721)
+            longitudes = np.linspace(0, 359.75, 1440)
+
     months={i:[] for i in range(0,6)}
     genesis_wind={i:[] for i in range(0,6)}
     genesis_pressure={i:[] for i in range(0,6)}
     genesis_dpres={i:[] for i in range(0,6)}
-    genesis_pres_var={i:[] for i in range(0,6)}    
+    genesis_pres_var={i:[] for i in range(0,6)}
     genesis_loc={i:[] for i in range(0,6)}
-    poisson={i:[0] for i in range(0,6)}    #Poisson genesis parameters (avg number of TC formations per year)
-    genesis_poisson=[] 
-    
-    track={i:[] for i in range(0,6)}     #All info for the track. 
-    #0=dlat0 (backward change in latitude),1=dlat1 (forward change in latitude),2=dlon0,3=dlon1,4=lat,5=lon
-    pressure={i:[] for i in range(0,6)}     #All info for the pressure change
-    #0=dp0 (backward change in pressure), 1=dp1 (forward change in pressure), 2=pressure, 3=latitude, 4=longitude, 5=month
-    for i in range(0,6):
+    poisson={i:[0] for i in range(0,6)}
+    poisson_phase={i:{0:0,1:0,2:0} for i in range(0,6)}
+    genesis_poisson=[]
+
+    track={i:[] for i in range(0,10)}
+    pressure={i:[] for i in range(0,10)}
+    for i in range(0,10):
         track[i]={j:[] for j in range(0,6)}
         pressure[i]={j:[] for j in range(0,6)}
-        
+
+    genesis_loc_phase={idx:{m:{'LN':[], 'NEU':[], 'EN':[]} for m in monthsall[idx]} for idx in range(6)}
+    genesis_months_phase={idx:{'LN':[], 'NEU':[], 'EN':[]} for idx in range(6)}
+
     for idx in range(0,6):
-        genesis_wind[idx]={i:[] for i in monthsall[idx]}        #genesis wind speed
-        genesis_pressure[idx]={i:[] for i in monthsall[idx]}    #genesis pressure
-        genesis_dpres[idx]={i:[] for i in monthsall[idx]}       #genesis change in pressure
-        genesis_pres_var[idx]={i:[] for i in monthsall[idx]}    #genesis variables for pressure.
-        genesis_loc[idx]={i:[] for i in monthsall[idx]}         #genesis location
-        
+        genesis_wind[idx]={i:[] for i in monthsall[idx]}
+        genesis_pressure[idx]={i:[] for i in monthsall[idx]}
+        genesis_dpres[idx]={i:[] for i in monthsall[idx]}
+        genesis_pres_var[idx]={i:[] for i in monthsall[idx]}
+        genesis_loc[idx]={i:[] for i in monthsall[idx]}
+
     for i in range(len(latlist)):
         if len(latlist[i])>0:
-            idx=basinlist[i][0]     #this is the index for each of the basins. 0=EP, 1=NA, 2=NI, 3=SI, 4=SP, 5=WP
-            month=monthlist[i][0]   #genesis month
-            
+            idx=basinlist[i][0]
+            month=monthlist[i][0]
+            year = int(yearlist[i][0]) if len(yearlist[i]) > 0 else -1
+            phase = phase_lookup.get((year, month), 1)
+            phase_name = {0:'LN',1:'NEU',2:'EN'}.get(phase, 'NEU')
+
             if month in monthsall[idx]:
                 months[idx].append(month)
                 genesis_wind[idx][month].append(windlist[i][0])
                 genesis_dpres[idx][month].append(preslist[i][1]-preslist[i][0])
                 genesis_pressure[idx][month].append(preslist[i][0])
                 genesis_loc[idx][month].append([latlist[i][0],lonlist[i][0]])
+                genesis_loc_phase[idx][month][phase_name].append([latlist[i][0], lonlist[i][0]])
+                genesis_months_phase[idx][phase_name].append(month)
                 poisson[idx][0]+=1
-                
+                poisson_phase[idx][phase]+=1
+
                 for j in range(1,len(latlist[i])-1):
+                    lat_now = latlist[i][j]
+                    lon_now = lonlist[i][j]
+                    vws_val = np.nan
+                    rh_val = np.nan
+                    if vws_fields is not None and month in vws_fields:
+                        vws_val = nearest_env_value(vws_fields[month], latitudes, longitudes, lat_now, lon_now)
+                    if rh_fields is not None and month in rh_fields:
+                        rh_val = nearest_env_value(rh_fields[month], latitudes, longitudes, lat_now, lon_now)
+
                     track[0][idx].append(latlist[i][j]-latlist[i][j-1])
                     track[1][idx].append(latlist[i][j+1]-latlist[i][j])
                     track[2][idx].append(lonlist[i][j]-lonlist[i][j-1])
                     track[3][idx].append(lonlist[i][j+1]-lonlist[i][j])
-                    track[4][idx].append(latlist[i][j])
-                    track[5][idx].append(lonlist[i][j])
-                
+                    track[4][idx].append(lat_now)
+                    track[5][idx].append(lon_now)
+                    track[6][idx].append(phase)
+                    track[7][idx].append(year)
+                    track[8][idx].append(vws_val)
+                    track[9][idx].append(rh_val)
+
                 for j in range(1,len(preslist[i])-1):
                     if np.isnan(preslist[i][j-1])==False and np.isnan(preslist[i][j])==False and np.isnan(preslist[i][j+1])==False:
+                        lat_now = latlist[i][j]
+                        lon_now = lonlist[i][j]
+                        vws_val = np.nan
+                        rh_val = np.nan
+                        if vws_fields is not None and month in vws_fields:
+                            vws_val = nearest_env_value(vws_fields[month], latitudes, longitudes, lat_now, lon_now)
+                        if rh_fields is not None and month in rh_fields:
+                            rh_val = nearest_env_value(rh_fields[month], latitudes, longitudes, lat_now, lon_now)
                         pressure[0][idx].append(preslist[i][j]-preslist[i][j-1])
                         pressure[1][idx].append(preslist[i][j+1]-preslist[i][j])
                         pressure[2][idx].append(preslist[i][j])
-                        pressure[3][idx].append(latlist[i][j])
-                        pressure[4][idx].append(lonlist[i][j])
+                        pressure[3][idx].append(lat_now)
+                        pressure[4][idx].append(lon_now)
                         pressure[5][idx].append(month)
-                 
+                        pressure[6][idx].append(phase)
+                        pressure[7][idx].append(year)
+                        pressure[8][idx].append(vws_val)
+                        pressure[9][idx].append(rh_val)
+
     for idx in range(0,6):
         genesis_poisson.append(round(poisson[idx][0]/nyear[idx],1))
-        
+
         dp0_neg,dp0_pos=[],[]
         for j in range(len(pressure[0][idx])):
             if pressure[0][idx][j]<0.:
                 dp0_neg.append(pressure[0][idx][j])
             elif pressure[0][idx][j]>0:
                 dp0_pos.append(pressure[0][idx][j])
-        
-        pneg=np.percentile(dp0_neg,1)
-        ppos=np.percentile(dp0_pos,99)
-        
+
+        pneg=np.percentile(dp0_neg,1) if len(dp0_neg)>0 else -50
+        ppos=np.percentile(dp0_pos,99) if len(dp0_pos)>0 else 50
+
         for month in monthsall[idx]:
             dplist=[v for v in genesis_dpres[idx][month] if np.isnan(v)==False and v>-1000.]
             plist=[v for v in genesis_pressure[idx][month] if np.isnan(v)==False and v>0.]
-            
-            mudp0,stddp0=stats.norm.fit(dplist)
-            mupres,stdpres=stats.norm.fit(plist)
-            
+            if len(dplist) < 2 or len(plist) < 2:
+                mudp0,stddp0,mupres,stdpres = 0.,1.,1000.,10.
+            else:
+                mudp0,stddp0=stats.norm.fit(dplist)
+                mupres,stdpres=stats.norm.fit(plist)
             genesis_pres_var[idx][month]=[mupres,stdpres,mudp0,stddp0,pneg,ppos]
-            
-                
+
     radius={i:[] for i in range(0,3)}
     for i in range(len(rmaxlist)):
         if len(rmaxlist[i])>0.:
             for j in range(len(rmaxlist[i])):
-                if np.isnan(rmaxlist[i][j])==False and np.isnan(preslist[i][j])==False:                    
+                if np.isnan(rmaxlist[i][j])==False and np.isnan(preslist[i][j])==False:
                     if preslist[i][j]<=920.:
                         radius[0].append(rmaxlist[i][j])
                     elif preslist[i][j]>920. and preslist[i][j]<=960.:
                         radius[1].append(rmaxlist[i][j])
                     elif preslist[i][j]>960.:
-                        radius[2].append(rmaxlist[i][j])               
-     
+                        radius[2].append(rmaxlist[i][j])
+
     print('genesis per basin: ', genesis_poisson)
     np.save(os.path.join(__location__,'RMAX_PRESSURE.npy'),radius)
     np.savetxt(os.path.join(__location__,'POISSON_GENESIS_PARAMETERS.txt'),genesis_poisson)
+    np.save(os.path.join(__location__,'POISSON_GENESIS_PARAMETERS_PHASE.npy'), poisson_phase)
     np.save(os.path.join(__location__,'TC_TRACK_VARIABLES.npy'),track)
     np.save(os.path.join(__location__,'TC_PRESSURE_VARIABLES.npy'),pressure)
     np.save(os.path.join(__location__,'DP0_PRES_GENESIS.npy'),genesis_pres_var)
-
     np.save(os.path.join(__location__,'DP_GEN.npy'),genesis_dpres)
     np.save(os.path.join(__location__,'PRES_GEN.npy'),genesis_pressure)
-    np.save(os.path.join(__location__,'GEN_LOC.npy'),genesis_loc)      
-    np.save(os.path.join(__location__,'GENESIS_WIND.npy'),genesis_wind)    
+    np.save(os.path.join(__location__,'GEN_LOC.npy'),genesis_loc)
+    np.save(os.path.join(__location__,'GEN_LOC_PHASE.npy'), genesis_loc_phase)
+    np.save(os.path.join(__location__,'GENESIS_WIND.npy'),genesis_wind)
     np.save(os.path.join(__location__,'GENESIS_MONTHS.npy'),months)
-    
-    
+    np.save(os.path.join(__location__,'GENESIS_MONTHS_PHASE.npy'), genesis_months_phase)
+
