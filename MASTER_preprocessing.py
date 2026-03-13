@@ -33,8 +33,21 @@ print('number of years: ',int(len(years)), 'from',years[0],'to',years[-1])
 preprocessing.extract_data(data, int(years[-1]))
 data.close()
 print('extract_data done')
-
 print('********************************')
+data = xr.open_dataset(os.path.join(__location__, "Monthly_mean_VWS.nc"))
+environmental.monthly_mean_vws(data)
+data.close()
+print("monthly_mean_vws done")
+
+print("********************************")
+data = xr.open_dataset(os.path.join(__location__, "Monthly_mean_RH600.nc"))
+environmental.monthly_mean_rh(data)
+data.close()
+print("monthly_mean_humidity done")
+
+print("********************************")
+
+
 oni_table = load_climate_index_table(os.path.join(__location__, 'climate_index.csv'))
 vws_fields = {}
 rh_fields = {}
