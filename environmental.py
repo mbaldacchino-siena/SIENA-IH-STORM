@@ -75,7 +75,7 @@ def monthly_mean_pressure(data):
         data_month = data.sel(valid_time=data["valid_time.month"] == nmonth1)
 
         #mean considering all number of months, not years 
-        month_mean = month_sum / data_month.dims["valid_time"]
+        month_mean = month_sum / data_month.sizes["valid_time"]
 
         #save to a txt
         mean_matrix=month_mean.msl.values/100 # convert to milibars
@@ -128,7 +128,7 @@ def monthly_mean_sst(data):
         data_month = data.sel(valid_time=data["valid_time.month"] == nmonth1)
 
         #mean considering all number of months, not years 
-        month_mean = month_sum / data_month.dims["valid_time"]
+        month_mean = month_sum / data_month.sizes["valid_time"]
 
         #save to a txt
         mean_matrix=month_mean.sst.values 
@@ -158,7 +158,7 @@ def monthly_mean_vws(data):
         data_month = data.sel(valid_time=data["valid_time.month"] == nmonth1)
 
         # mean considering all number of months, not years
-        month_mean = month_sum / data_month.dims["valid_time"]
+        month_mean = month_sum / data_month.sizes["valid_time"]
 
         # save to a txt
         mean_matrix = month_mean.vws.values
@@ -180,7 +180,9 @@ def monthly_mean_rh(data):
 
     """
     # Group by month and take the sum
-    data_sum = data.groupby("valid_time.month").sum(dim="valid_time")
+    data_sum = (
+        data.isel(pressure_level=0).groupby("valid_time.month").sum(dim="valid_time")
+    )
 
     for nmonth in range(0, 12):
         nmonth1 = nmonth + 1
@@ -192,10 +194,11 @@ def monthly_mean_rh(data):
         data_month = data.sel(valid_time=data["valid_time.month"] == nmonth1)
 
         # mean considering all number of months, not years
-        month_mean = month_sum / data_month.dims["valid_time"]
+        month_mean = month_sum / data_month.sizes["valid_time"]
 
         # save to a txt
         mean_matrix = month_mean.r.values
+        print(mean_matrix)
         np.savetxt(
             os.path.join(__location__, "Monthly_mean_RH600_" + str(nmonth1) + ".txt"),
             mean_matrix,
