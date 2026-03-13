@@ -20,6 +20,7 @@ from scipy.stats import norm
 from scipy.optimize import curve_fit
 import math
 import preprocessing
+from siena_utils import solve_ridge
 import os
 import sys
 pd.options.mode.chained_assignment=None # default='warn'
@@ -467,201 +468,146 @@ def PRESEXPECTED(dp,presmpi,a,b,c,d):
         dp1_list.append(a+b*dp[k]+c*np.exp(-d*presmpi[k]))
     return dp1_list
 
-def pressure_coefficients(idx_basin,months,months_for_coef):
+def pressure_coefficients(idx_basin,months,months_for_coef,lambda_phase=5.0):
     """
-    Calculate the pressure coefficients
+    Calculate pressure coefficients using pooled fitting with phase dummies and optional VWS/RH.
+    The first seven stored values remain backward-compatible with the original generator,
+    while extra coefficients are appended for SIENA phase-aware generation.
     """
     data=xr.open_dataset(os.path.join(__location__,'Monthly_mean_SST.nc'))
-    
     lon=data.longitude.values
     lat=data.latitude.values
     data.close()
     step=5
     pres_variables=np.load(os.path.join(__location__,'TC_PRESSURE_VARIABLES.npy'),allow_pickle=True).item()
-
     coeflist={i:[] for i in range(0,6)}
-    
-    #months          =[[6,7,8,9,10,11],[6,7,8,9,10,11],[9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
-    #months_for_coef =[[6,7,8,9,10,10],[6,7,8,9,10,11],[10,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
-    
-    #original
-    #months=[[6,7,8,9,10,11],[6,7,8,9,10,11],[4,5,6,10,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
-    
-    #months_for_coef=[[6,7,8,9,10,11],[6,7,8,9,10,11],[4,5,6,9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
-        
-    #for idx in range(0,6):
-    for ii in range(len(idx_basin)): 
-        idx=idx_basin[ii]
 
+    for ii in range(len(idx_basin)):
+        idx=idx_basin[ii]
         coeflist[idx]={i:[] for i in months_for_coef[idx]}
-        
-        lat0,lat1,lon0,lon11=preprocessing.BOUNDARIES_BASINS(idx) 
-        
+        lat0,lat1,lon0,lon11=preprocessing.BOUNDARIES_BASINS(idx)
         lat_0=np.abs(lat-lat1).argmin()
         lon_0=np.abs(lon-lon0).argmin()
-        
+
+        # pooled monthly environment fields for fitting
+        pooled_sst = {m: np.loadtxt(os.path.join(__location__, f'Monthly_mean_SST_{m}.txt')) for m in set(months[idx]) if os.path.exists(os.path.join(__location__, f'Monthly_mean_SST_{m}.txt'))}
+        pooled_mslp = {m: np.loadtxt(os.path.join(__location__, f'Monthly_mean_MSLP_{m}.txt')) for m in set(months[idx]) if os.path.exists(os.path.join(__location__, f'Monthly_mean_MSLP_{m}.txt'))}
+
         for i in range(len(months[idx])):
             m=months[idx][i]
-            print(idx,m)
-            
             m_coef=months_for_coef[idx][i]
+            print(idx,m)
             MPI_MATRIX=np.loadtxt(os.path.join(__location__,'MPI_FIELDS_'+str(idx)+str(m)+'.txt'))
-        
+
             lat_df,lon_df,mpi_df=[],[],[]
-            
-            for i in range(len(MPI_MATRIX[:,0])):
-                for j in range(len(MPI_MATRIX[0,:])):
-                    lat_df.append(lat[i+lat_0])
-                    lon_df.append(lon[j+lon_0])
-                    mpi_df.append(MPI_MATRIX[i,j])
-                               
+            for i0 in range(len(MPI_MATRIX[:,0])):
+                for j0 in range(len(MPI_MATRIX[0,:])):
+                    lat_df.append(lat[i0+lat_0])
+                    lon_df.append(lon[j0+lon_0])
+                    mpi_df.append(MPI_MATRIX[i0,j0])
             df=pd.DataFrame({'Latitude':lat_df,'Longitude':lon_df,'MPI':mpi_df})
             to_bin=lambda x:np.floor(x/step)*step
-            df["latbin"]=df.Latitude.map(to_bin)
-            df["lonbin"]=df.Longitude.map(to_bin)
-            MPI=df.groupby(["latbin","lonbin"])['MPI'].apply(list)  
-            
+            df['latbin']=df.Latitude.map(to_bin)
+            df['lonbin']=df.Longitude.map(to_bin)
+            MPI=df.groupby(['latbin','lonbin'])['MPI'].apply(list)
+
             latbins1=np.linspace(lat0,lat1-5,(lat1-5-lat0)//step+1)
             lonbins1=np.linspace(lon0,lon11-5,(lon11-5-lon0)//step+1)
-            
             matrix_mpi=-100*np.ones((int((lat1-lat0)/5),int((lon11-lon0)/5)))
             for latidx in latbins1:
                 for lonidx in lonbins1:
                     i_ind=int((latidx-lat0)/5.)
                     j_ind=int((lonidx-lon0)/5.)
                     matrix_mpi[i_ind,j_ind]=np.nanmin(MPI[latidx][lonidx])
-                    
             if idx==1:
-                matrix_mpi=np.c_[matrix_mpi,matrix_mpi[:,-1]]        
-                    
-            df_data=pd.DataFrame({'Latitude':pres_variables[3][idx],'Longitude':pres_variables[4][idx],'Pressure':pres_variables[2][idx],'DP0':pres_variables[0][idx],'DP1':pres_variables[1][idx],'Month':pres_variables[5][idx]})
-            df_data=df_data[(df_data['Pressure']>0.) & (df_data['DP0']>-10000.) & (df_data['DP1']>-10000.) & (df_data['Longitude']>=lon0) &(df_data['Longitude']<lon11) & (df_data["Latitude"]>=lat0) & (df_data["Latitude"]<lat1)]
-            df_data1=df_data[df_data["Month"]==m]
-            
-            df_data1["latbin"]=df_data1.Latitude.map(to_bin)
-            df_data1["lonbin"]=df_data1.Longitude.map(to_bin)    
-        
-            latbins=np.unique(df_data1["latbin"])
-            lonbins=df_data1.groupby("latbin")["lonbin"].apply(list)
-            Pressure=df_data1.groupby(["latbin","lonbin"])["Pressure"].apply(list)
-            DP1=df_data1.groupby(["latbin","lonbin"])['DP1'].apply(list)
-            DP0=df_data1.groupby(["latbin","lonbin"])['DP0'].apply(list) 
-            
+                matrix_mpi=np.c_[matrix_mpi,matrix_mpi[:,-1]]
+
+            df_data=pd.DataFrame({
+                'Latitude':pres_variables[3][idx],
+                'Longitude':pres_variables[4][idx],
+                'Pressure':pres_variables[2][idx],
+                'DP0':pres_variables[0][idx],
+                'DP1':pres_variables[1][idx],
+                'Month':pres_variables[5][idx],
+                'Phase':pres_variables[6][idx] if 6 in pres_variables else np.ones(len(pres_variables[0][idx])),
+                'Year': pres_variables[7][idx] if 7 in pres_variables else np.zeros(len(pres_variables[0][idx])),
+                'VWS': pres_variables[8][idx] if 8 in pres_variables else np.nan*np.ones(len(pres_variables[0][idx])),
+                'RH600': pres_variables[9][idx] if 9 in pres_variables else np.nan*np.ones(len(pres_variables[0][idx])),
+            })
+            df_data=df_data[(df_data['Pressure']>0.) & (df_data['DP0']>-10000.) & (df_data['DP1']>-10000.) & (df_data['Longitude']>=lon0) &(df_data['Longitude']<lon11) & (df_data['Latitude']>=lat0) & (df_data['Latitude']<lat1)]
+            df_data1=df_data[df_data['Month']==m].copy()
+            if len(df_data1)==0:
+                continue
+            df_data1['latbin']=df_data1.Latitude.map(to_bin)
+            df_data1['lonbin']=df_data1.Longitude.map(to_bin)
+            df_data1['I_EN'] = (df_data1['Phase'] == 2).astype(float)
+            df_data1['I_LN'] = (df_data1['Phase'] == 0).astype(float)
+
+            latbins=np.unique(df_data1['latbin'])
+            lonbins=df_data1.groupby('latbin')['lonbin'].apply(list)
             if idx==1:
                 lon1=lon11+5
             else:
                 lon1=lon11
-        
-            matrix_mean=-100*np.ones((int((lat1-lat0)/5),int((lon1-lon0)/5)))
-            matrix_std=-100*np.ones((int((lat1-lat0)/5),int((lon1-lon0)/5)))
-            matrix_c0=-100*np.ones((int((lat1-lat0)/5),int((lon1-lon0)/5)))
-            matrix_c1=-100*np.ones((int((lat1-lat0)/5),int((lon1-lon0)/5)))
-            matrix_c2=-100*np.ones((int((lat1-lat0)/5),int((lon1-lon0)/5)))
-            matrix_c3=-100*np.ones((int((lat1-lat0)/5),int((lon1-lon0)/5)))
-        
-            count=0
+            matrices = {name: -100*np.ones((int((lat1-lat0)/5),int((lon1-lon0)/5))) for name in ['mean','std','c0','c1','c2','c3','cvws','crh','cen','cln']}
             lijst=[]
             for latidx in latbins:
-                lonlist=np.unique(lonbins[latidx])
-                for lonidx in lonlist:
+                for lonidx in np.unique(lonbins[latidx]):
                     lijst.append((latidx,lonidx))
-                    
+
             for latidx in latbins:
-                lonlist=np.unique(lonbins[latidx])
-                for lonidx in lonlist:            
+                for lonidx in np.unique(lonbins[latidx]):
                     i_ind=int((latidx-lat0)/5.)
                     j_ind=int((lonidx-lon0)/5.)
-                    preslist=[]
-                    dp0list=[]
-                    dp1list=[]
-                    mpi=[]
-                    #include all bins from lat-5 to lat+5 and lon-5 to lon+5
+                    subset=[]
                     for lat_sur in [-5,0,5]:
                         for lon_sur in [-5,0,5]:
-                            if (int(latidx+lat_sur),int(lonidx+lon_sur)) in lijst:
-                                if np.nanmin(MPI[latidx+lat_sur][lonidx+lon_sur])>0.:
-                                    for pr,d0,d1 in zip(Pressure[latidx+lat_sur][lonidx+lon_sur],DP0[latidx+lat_sur][lonidx+lon_sur],DP1[latidx+lat_sur][lonidx+lon_sur]):
-                                        preslist.append(pr)
-                                        dp0list.append(d0)
-                                        dp1list.append(d1)
-                                        mpi.append(np.nanmin(MPI[latidx+lat_sur][lonidx+lon_sur]))
-                                    
-                    if len(preslist)>9.:
-                        presmpi_list=[]
-                        for y in range(len(preslist)):
-                            if preslist[y]<mpi[y]:
-                                presmpi_list.append(0)
-                            else:
-                                presmpi_list.append(preslist[y]-mpi[y])
-                                
-                        X=[dp0list,presmpi_list]
-                        try:
-                            opt,l=curve_fit(PRESFUNCTION,X,dp1list,p0=[0,0,0,0],maxfev=5000)
-                            [c0,c1,c2,c3]=opt
-                            expected=PRESEXPECTED(dp1list,presmpi_list,c0,c1,c2,c3)
-                            Epres=[]
-                            for ind in range(len(expected)):
-                                Epres.append(expected[ind]-dp0list[ind])
-                                
-                            mu,std=norm.fit(Epres)
-                            if abs(mu)<1 and c2>0: #otherwise: the fit didn't go as planned: large deviation from expected values..
-                                matrix_mean[i_ind,j_ind]=mu
-                                matrix_std[i_ind,j_ind]=std
-                                matrix_c0[i_ind,j_ind]=c0
-                                matrix_c1[i_ind,j_ind]=c1
-                                matrix_c2[i_ind,j_ind]=c2
-                                matrix_c3[i_ind,j_ind]=c3
-                        except RuntimeError:
-                            count=count+1
-            print (str(count)+' fields out of '+str(len(latbins1)*len(lonbins1))+' bins do not have a fit')
-            
-            
-            (X,Y)=matrix_mean.shape
-            neighbors=lambda x, y : [(x2, y2) for (x2,y2) in [(x,y-1),(x,y+1),(x+1,y),(x-1,y),(x-1,y-1),(x-1,y+1),(x+1,y-1),(x+1,y+1)]
-                                       if (-1 < x < X and
-                                           -1 < y < Y and
-                                           (x != x2 or y != y2) and
-                                           (0 <= x2 < X) and
-                                           (0 <= y2 < Y))]
-            var=100
-            while var!=0:
-                shadowmatrix=np.zeros((X,Y))
-                zeroeslist=[[i1,j1] for i1,x in enumerate(matrix_mean) for j1,y in enumerate(x) if y==-100]
-                var=len(zeroeslist)
-                for [i,j] in zeroeslist:       
-                        lijst=neighbors(i,j)
-                        for item in lijst:
-                            (i0,j0)=item
-                            if matrix_mean[i0,j0]!=-100 and shadowmatrix[i0,j0]==0:
-                                matrix_mean[i,j]=matrix_mean[i0,j0]
-                                matrix_std[i,j]=matrix_std[i0,j0]
-                                matrix_c0[i,j]=matrix_c0[i0,j0]
-                                matrix_c1[i,j]=matrix_c1[i0,j0]
-                                matrix_c2[i,j]=matrix_c2[i0,j0]
-                                matrix_c3[i,j]=matrix_c3[i0,j0]
-                                shadowmatrix[i,j]=1                     
+                            key=(int(latidx+lat_sur),int(lonidx+lon_sur))
+                            if key in lijst and np.nanmin(MPI[latidx+lat_sur][lonidx+lon_sur])>0.:
+                                chunk = df_data1[(df_data1['latbin']==latidx+lat_sur) & (df_data1['lonbin']==lonidx+lon_sur)].copy()
+                                if len(chunk)>0:
+                                    chunk['MPI'] = np.nanmin(MPI[latidx+lat_sur][lonidx+lon_sur])
+                                    subset.append(chunk)
+                    if len(subset)==0:
+                        continue
+                    sub = pd.concat(subset, ignore_index=True)
+                    if len(sub) > 9:
+                        presmpi = np.maximum(0.0, sub['Pressure'].values - sub['MPI'].values)
+                        X = np.column_stack([sub['DP0'].values, presmpi, np.nan_to_num(sub['VWS'].values), np.nan_to_num(sub['RH600'].values), sub['I_EN'].values, sub['I_LN'].values])
+                        y = sub['DP1'].values
+                        beta = solve_ridge(X, y, penalty_cols=[5,6], alpha=lambda_phase, add_intercept=True)
+                        pred = beta[0] + X @ beta[1:]
+                        resid = y - pred
+                        mu,std = norm.fit(resid)
+                        if abs(mu) < 2:
+                            matrices['mean'][i_ind,j_ind]=mu
+                            matrices['std'][i_ind,j_ind]=std
+                            matrices['c0'][i_ind,j_ind]=beta[0]
+                            matrices['c1'][i_ind,j_ind]=beta[1]
+                            matrices['c2'][i_ind,j_ind]=beta[2]
+                            matrices['c3'][i_ind,j_ind]=beta[3]
+                            matrices['cvws'][i_ind,j_ind]=beta[4]
+                            matrices['crh'][i_ind,j_ind]=beta[5]
+                            matrices['cen'][i_ind,j_ind]=beta[6]
+                            matrices['cln'][i_ind,j_ind]=beta[7]
+            print('Filling succeeded')
+            Xdim,Ydim=matrices['mean'].shape
+            neighbors=lambda x, y : [(x2, y2) for (x2,y2) in [(x,y-1),(x,y+1),(x+1,y),(x-1,y),(x-1,y-1),(x-1,y+1),(x+1,y-1),(x+1,y+1)] if (-1 < x < Xdim and -1 < y < Ydim and (x != x2 or y != y2) and (0 <= x2 < Xdim) and (0 <= y2 < Ydim))]
+            for name in ['mean','std','c0','c1','c2','c3','cvws','crh','cen','cln']:
+                var=100
+                matrix=matrices[name]
+                while var!=0:
+                    shadowmatrix=np.zeros((Xdim,Ydim))
+                    zeroeslist=[[i1,j1] for i1,x in enumerate(matrix) for j1,y in enumerate(x) if y==-100]
+                    var=len(zeroeslist)
+                    for [i1,j1] in zeroeslist:
+                        for (i0,j0) in neighbors(i1,j1):
+                            if matrix[i0,j0]!=-100 and shadowmatrix[i0,j0]==0:
+                                matrix[i1,j1]=matrix[i0,j0]
+                                shadowmatrix[i1,j1]=1
                                 break
-            
-            print('Filling succeeded')                 
-            var=100
-            (X,Y)=matrix_mpi.shape
-            while var!=0:
-                shadowmatrix=np.zeros((X,Y))
-                zeroeslist=[[i1,j1] for i1,x in enumerate(matrix_mpi) for j1,y in enumerate(x) if math.isnan(y)]
-                var=len(zeroeslist)
-                for [i,j] in zeroeslist:       
-                        lijst=neighbors(i,j)
-                        for item in lijst:
-                            (i0,j0)=item
-                            if math.isnan(matrix_mpi[i0,j0])==False and shadowmatrix[i0,j0]==0:
-                                matrix_mpi[i,j]=matrix_mpi[i0,j0]
-                                shadowmatrix[i,j]=1                     
-                                break
-        
-            #print(np.mean(matrix_c0),np.mean(matrix_c1),np.mean(matrix_c2),np.mean(matrix_c3))
-                     
-            for i in range(0,X):
-                for j in range(0,Y):
-                    coeflist[idx][m_coef].append([matrix_c0[i,j],matrix_c1[i,j],matrix_c2[i,j],matrix_c3[i,j],matrix_mean[i,j],matrix_std[i,j],matrix_mpi[i,j]])
-            
-        np.save(os.path.join(__location__,'COEFFICIENTS_JM_PRESSURE.npy'),coeflist)      
+                matrices[name]=matrix
+            for i0 in range(0,matrix_mpi.shape[0]):
+                for j0 in range(0,matrix_mpi.shape[1]):
+                    coeflist[idx][m_coef].append([matrices['c0'][i0,j0],matrices['c1'][i0,j0],matrices['c2'][i0,j0],matrices['c3'][i0,j0],matrices['mean'][i0,j0],matrices['std'][i0,j0],matrix_mpi[i0,j0],matrices['cvws'][i0,j0],matrices['crh'][i0,j0],matrices['cen'][i0,j0],matrices['cln'][i0,j0]])
+        np.save(os.path.join(__location__,'COEFFICIENTS_JM_PRESSURE.npy'),coeflist)
