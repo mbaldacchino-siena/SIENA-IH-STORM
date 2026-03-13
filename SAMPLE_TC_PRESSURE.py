@@ -22,6 +22,7 @@ import os
 dir_path=os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 import random
+from siena_utils import normalize_phase, phase_code, load_monthly_field
 
 def Calculate_Vmax(Penv,Pc,coef):
     """
@@ -116,7 +117,7 @@ def find_index_pressure(basin,lat,lon,lat0,lon0,lon1):
     ind=latindex*maxlon+lonindex
     return ind
     
-def PRESSURE_JAMES_MASON(dp,pres,a,b,c,d,mpi):
+def PRESSURE_JAMES_MASON(dp,pres,a,b,c,d,mpi,vws=0.0,rh=0.0,phase=None,c_vws=0.0,c_rh=0.0,c_en=0.0,c_ln=0.0):
     """
     Function to calculate the change in pressure
 
@@ -136,7 +137,8 @@ def PRESSURE_JAMES_MASON(dp,pres,a,b,c,d,mpi):
         presmpi=0
     else:
         presmpi=pres-mpi
-    y=a+b*dp+c*np.exp(-d*presmpi)
+    phase_effect = c_en if phase == 2 else c_ln if phase == 0 else 0.0
+    y=a+b*dp+c*np.exp(-d*presmpi) + c_vws*vws + c_rh*rh + phase_effect
     return y
 
 def haversine(lat1,lon1,lat2,lon2):
@@ -319,7 +321,7 @@ def add_parameters_to_TC_data(pressure_list,wind_list,latfull,lonfull,year,storm
 
     return TC_data
 
-def TC_pressure(basin,latlist,lonlist,landfalllist,year,storms,monthlist,TC_data):  
+def TC_pressure(basin,latlist,lonlist,landfalllist,year,storms,monthlist,TC_data,phase=None):  
     """
     Calculate TC pressure
 
@@ -347,6 +349,8 @@ def TC_pressure(basin,latlist,lonlist,landfalllist,year,storms,monthlist,TC_data
     latidx_penv=np.linspace(90,-90,721)
     lonidx_penv=np.linspace(0,359.75,1440)    
     
+    phase = normalize_phase(phase)
+    ph_code = phase_code(phase) if phase is not None else 1
     JM_pressure=np.load(os.path.join(__location__,'COEFFICIENTS_JM_PRESSURE.npy'), allow_pickle=True).item()
             
     Genpres=np.load(os.path.join(__location__,'DP0_PRES_GENESIS.npy'), allow_pickle=True).item()
@@ -370,7 +374,17 @@ def TC_pressure(basin,latlist,lonlist,landfalllist,year,storms,monthlist,TC_data
         p=np.nan
         
         #This is the full MSLP field, with lat0=90 deg, lat1=-90 deg, lon0=0 deg, lon1=359.75 deg. len(lat)=721, len(lon)=1440
-        Penv_field=np.loadtxt(os.path.join(dir_path,'Monthly_mean_MSLP_'+str(month)+'.txt'))
+        Penv_field=load_monthly_field(dir_path, 'Monthly_mean_MSLP', month, phase=phase)
+        VWS_field = None
+        RH_field = None
+        try:
+            VWS_field = load_monthly_field(dir_path, 'Monthly_mean_VWS', month, phase=phase)
+        except Exception:
+            pass
+        try:
+            RH_field = load_monthly_field(dir_path, 'Monthly_mean_RH600', month, phase=phase)
+        except Exception:
+            pass
                
         constants_pressure=JM_pressure[idx][month]
         constants_pressure=np.array(constants_pressure)
@@ -434,8 +448,12 @@ def TC_pressure(basin,latlist,lonlist,landfalllist,year,storms,monthlist,TC_data
                         
                       ind=int(find_index_pressure(basin,lat,lon,lat0,lon0,lon1)) #find index for pressure
                       
-                      [c0,c1,c2,c3,EPmu,EPstd,mpi]=constants_pressure[ind]
-                      y=PRESSURE_JAMES_MASON(dp1,p,c0,c1,c2,c3,mpi) 
+                      row = constants_pressure[ind]
+                      c0,c1,c2,c3,EPmu,EPstd,mpi = row[:7]
+                      c_vws,c_rh,c_en,c_ln = (row[7:11] if len(row) >= 11 else [0.0,0.0,0.0,0.0])
+                      vws = float(VWS_field[lat_dummy, lon_dummy]) if VWS_field is not None else 0.0
+                      rh = float(RH_field[lat_dummy, lon_dummy]) if RH_field is not None else 0.0
+                      y=PRESSURE_JAMES_MASON(dp1,p,c0,c1,c2,c3,mpi,vws=vws,rh=rh,phase=ph_code,c_vws=c_vws,c_rh=c_rh,c_en=c_en,c_ln=c_ln) 
                       epsilon=np.random.normal(EPmu,EPstd)
                       dp0=float(y+epsilon)
                       
@@ -528,9 +546,12 @@ def TC_pressure(basin,latlist,lonlist,landfalllist,year,storms,monthlist,TC_data
                     else: #apply James-Mason formula to find next change in pressure
                         ind=int(find_index_pressure(basin,lat,lon,lat0,lon0,lon1)) #find index for pressure
                         
-                        [c0,c1,c2,c3,EPmu,EPstd,mpi]=constants_pressure[ind] 
-                        
-                        y=PRESSURE_JAMES_MASON(dp1,p,c0,c1,c2,c3,mpi) 
+                        row = constants_pressure[ind]
+                        c0,c1,c2,c3,EPmu,EPstd,mpi = row[:7]
+                        c_vws,c_rh,c_en,c_ln = (row[7:11] if len(row) >= 11 else [0.0,0.0,0.0,0.0])
+                        vws = float(VWS_field[lat_dummy, lon_dummy]) if VWS_field is not None else 0.0
+                        rh = float(RH_field[lat_dummy, lon_dummy]) if RH_field is not None else 0.0
+                        y=PRESSURE_JAMES_MASON(dp1,p,c0,c1,c2,c3,mpi,vws=vws,rh=rh,phase=ph_code,c_vws=c_vws,c_rh=c_rh,c_en=c_en,c_ln=c_ln) 
                         
                         epsilon=np.random.normal(EPmu,EPstd)
 
