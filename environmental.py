@@ -63,7 +63,7 @@ def monthly_mean_pressure(data):
 
     """  
     # Group by month and take the sum
-    data_sum = data.groupby('time.month').sum(dim='time')
+    data_sum = data.groupby('valid_time.month').sum(dim='valid_time')
 
     for nmonth in range(0,12):
         nmonth1=nmonth+1
@@ -72,10 +72,10 @@ def monthly_mean_pressure(data):
         #sum all months equal to nmonth1
         month_sum = data_sum.sel(month=nmonth1)
 
-        data_month= data.sel(time=data['time.month'] == nmonth1)
+        data_month = data.sel(valid_time=data["valid_time.month"] == nmonth1)
 
         #mean considering all number of months, not years 
-        month_mean = month_sum/data_month.dims['time']
+        month_mean = month_sum / data_month.dims["valid_time"]
 
         #save to a txt
         mean_matrix=month_mean.msl.values/100 # convert to milibars
@@ -116,7 +116,7 @@ def monthly_mean_sst(data):
 
     """  
     # Group by month and take the sum
-    data_sum = data.groupby('time.month').sum(dim='time')
+    data_sum = data.groupby("valid_time.month").sum(dim="valid_time")
 
     for nmonth in range(0,12):
         nmonth1=nmonth+1
@@ -125,14 +125,81 @@ def monthly_mean_sst(data):
         #sum all months equal to nmonth1
         month_sum = data_sum.sel(month=nmonth1)
 
-        data_month= data.sel(time=data['time.month'] == nmonth1)
+        data_month = data.sel(valid_time=data["valid_time.month"] == nmonth1)
 
         #mean considering all number of months, not years 
-        month_mean = month_sum/data_month.dims['time']
+        month_mean = month_sum / data_month.dims["valid_time"]
 
         #save to a txt
         mean_matrix=month_mean.sst.values 
         np.savetxt(os.path.join(__location__,'Monthly_mean_SST_'+str(nmonth1)+'.txt'),mean_matrix)         
+
+def monthly_mean_vws(data):
+    """
+    Create the monthly mean VWS fields. This do function outputs a txt-file of a global field of monthly mean VWS for every month.
+    This function consider number of months (e.g. january) instead of years. So it can be use as climatalogies like ENSO
+    Parameters
+    ----------
+    data : dataset with monthly mean Wind values for a number of years of data (ERA-5) at 850hPa and 200hPa
+
+    @mbaldacchino 2026
+
+    """
+    # Group by month and take the sum
+    data_sum = data.groupby("valid_time.month").sum(dim="valid_time")
+
+    for nmonth in range(0, 12):
+        nmonth1 = nmonth + 1
+        print("VWS fields for month:", nmonth1)
+
+        # sum all months equal to nmonth1
+        month_sum = data_sum.sel(month=nmonth1)
+
+        data_month = data.sel(valid_time=data["valid_time.month"] == nmonth1)
+
+        # mean considering all number of months, not years
+        month_mean = month_sum / data_month.dims["valid_time"]
+
+        # save to a txt
+        mean_matrix = month_mean.vws.values
+        np.savetxt(
+            os.path.join(__location__, "Monthly_mean_VWS_" + str(nmonth1) + ".txt"),
+            mean_matrix,
+        )
+
+
+def monthly_mean_rh(data):
+    """
+    Create the monthly mean RH fields. This do function outputs a txt-file of a global field of monthly mean RH for every month.
+    This function consider number of months (e.g. january) instead of years. So it can be use as climatalogies like ENSO
+    Parameters
+    ----------
+    data : dataset with monthly mean RH600 values for a number of years of data (ERA-5)
+
+    @mbaldacchino 2026
+
+    """
+    # Group by month and take the sum
+    data_sum = data.groupby("valid_time.month").sum(dim="valid_time")
+
+    for nmonth in range(0, 12):
+        nmonth1 = nmonth + 1
+        print("SST fields for month:", nmonth1)
+
+        # sum all months equal to nmonth1
+        month_sum = data_sum.sel(month=nmonth1)
+
+        data_month = data.sel(valid_time=data["valid_time.month"] == nmonth1)
+
+        # mean considering all number of months, not years
+        month_mean = month_sum / data_month.dims["valid_time"]
+
+        # save to a txt
+        mean_matrix = month_mean.r.values
+        np.savetxt(
+            os.path.join(__location__, "Monthly_mean_RH600_" + str(nmonth1) + ".txt"),
+            mean_matrix,
+        )
 
 
 def check_season(idx,month):
