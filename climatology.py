@@ -242,3 +242,122 @@ def climatology_data_cliamte_index (climate_index,year,threshold):
 
     # save filtered cyclones 
     filtered_cyclones.to_netcdf(local_path+'/IBTrACS.'+str(year[0])+'_'+str(year[1])+'v04r00.nc')
+
+# ==========================
+# SIENA additions for pooled + phase-aware climatologies
+# ==========================
+
+def add_phase_labels(climate_df, positive_threshold=0.5, negative_threshold=-0.5):
+    climate_df = climate_df.copy()
+    climate_df["phase"] = np.where(
+        climate_df["climate_index"] >= positive_threshold,
+        "EN",
+        np.where(climate_df["climate_index"] <= negative_threshold, "LN", "NEU"),
+    )
+    return climate_df
+
+
+def get_months_by_phase(climate_df, start_year=None, end_year=None):
+    climate_df = climate_df.copy()
+    if start_year is not None:
+        climate_df = climate_df[climate_df["year"] >= start_year]
+    if end_year is not None:
+        climate_df = climate_df[climate_df["year"] <= end_year]
+    climate_df["date"] = pd.to_datetime(climate_df["year"].astype(str) + climate_df["month"].astype(str), format="%Y%m")
+    return {phase: climate_df[climate_df["phase"] == phase]["date"].to_list() for phase in ["LN", "NEU", "EN"]}
+
+
+def save_phase_table(climate_df, local_path):
+    climate_df.to_csv(op.join(local_path, 'climate_index.csv'), index=False)
+
+
+def compute_monthly_climatology(variable, months_by_phase, output_prefix, dataset_path=None):
+    local_path = os.getcwd()
+    if dataset_path is None:
+        dataset_path = op.join(local_path, f'Monthly_mean_{variable}.nc')
+    ds = xr.open_dataset(dataset_path)
+    if 'valid_time' in ds.coords and 'time' not in ds.coords:
+        ds = ds.rename({'valid_time': 'time'})
+    time_name = 'time'
+    var_candidates = [c for c in ds.data_vars.keys()]
+    var_name = var_candidates[0]
+    ds[time_name] = pd.to_datetime(ds[time_name].values)
+
+    for month in range(1, 13):
+        pooled = ds[var_name].sel({time_name: ds[time_name].dt.month == month}).mean(time_name, skipna=True).values
+        np.savetxt(op.join(local_path, f'Monthly_mean_{output_prefix}_{month}.txt'), pooled)
+        for phase in ["LN", "NEU", "EN"]:
+            dates = months_by_phase.get(phase, [])
+            if len(dates) == 0:
+                continue
+            phase_ds = ds.sel({time_name: ds[time_name].isin(dates)})
+            phase_ds = phase_ds[var_name].sel({time_name: phase_ds[time_name].dt.month == month})
+            if phase_ds.sizes.get(time_name, 0) == 0:
+                continue
+            field = phase_ds.mean(time_name, skipna=True).values
+            np.savetxt(op.join(local_path, f'Monthly_mean_{output_prefix}_{month}_{phase}.txt'), field)
+    ds.close()
+
+
+def download_wind_shear_data(dir_data, year_list):
+    c = cdsapi.Client()
+    out_path = op.join(dir_data, 'Monthly_mean_VWS_components.nc')
+    c.retrieve('reanalysis-era5-pressure-levels-monthly-means', {
+        'format': 'netcdf',
+        'product_type': 'monthly_averaged_reanalysis',
+        'variable': ['u_component_of_wind', 'v_component_of_wind'],
+        'pressure_level': ['200', '850'],
+        'year': year_list,
+        'month': ['01','02','03','04','05','06','07','08','09','10','11','12'],
+        'time': '00:00',
+    }, out_path)
+    ds = xr.open_dataset(out_path)
+    u_name = 'u' if 'u' in ds.data_vars else list(ds.data_vars)[0]
+    v_name = 'v' if 'v' in ds.data_vars else list(ds.data_vars)[1]
+    level_name = 'pressure_level' if 'pressure_level' in ds.coords else 'level'
+    u200 = ds[u_name].sel({level_name: 200})
+    u850 = ds[u_name].sel({level_name: 850})
+    v200 = ds[v_name].sel({level_name: 200})
+    v850 = ds[v_name].sel({level_name: 850})
+    vws = np.sqrt((u200 - u850) ** 2 + (v200 - v850) ** 2)
+    xr.Dataset({'vws': vws}).to_netcdf(op.join(dir_data, 'Monthly_mean_VWS.nc'))
+    ds.close()
+
+
+def download_humidity_data(dir_data, year_list):
+    c = cdsapi.Client()
+    c.retrieve('reanalysis-era5-pressure-levels-monthly-means', {
+        'format': 'netcdf',
+        'product_type': 'monthly_averaged_reanalysis',
+        'variable': 'relative_humidity',
+        'pressure_level': '600',
+        'year': year_list,
+        'month': ['01','02','03','04','05','06','07','08','09','10','11','12'],
+        'time': '00:00',
+    }, op.join(dir_data, 'Monthly_mean_RH600.nc'))
+
+
+def build_pooled_and_phase_climatologies(period, climate_index='ONI', threshold=0.5, fetch_new=False):
+    local_path = os.getcwd()
+    year_list = [str(y) for y in range(period[0], period[1] + 1)]
+    if fetch_new:
+        download_monthly_mean_SLP(local_path, year_list)
+        download_monthly_mean_SST(local_path, year_list)
+        try:
+            download_wind_shear_data(local_path, year_list)
+            download_humidity_data(local_path, year_list)
+        except Exception as exc:
+            print(f'Warning: VWS/RH downloads failed: {exc}')
+    get_climate_index(f'https://psl.noaa.gov/data/correlation/{climate_index}.data', local_path)
+    climate_df = pd.read_csv(op.join(local_path, 'climate_index.csv'))
+    climate_df = climate_df[(climate_df['year'] >= period[0]) & (climate_df['year'] <= period[1])]
+    climate_df = add_phase_labels(climate_df, positive_threshold=abs(threshold), negative_threshold=-abs(threshold))
+    save_phase_table(climate_df, local_path)
+    months_by_phase = get_months_by_phase(climate_df, period[0], period[1])
+    compute_monthly_climatology('SST', months_by_phase, 'SST')
+    compute_monthly_climatology('MSLP', months_by_phase, 'MSLP')
+    if op.exists(op.join(local_path, 'Monthly_mean_VWS.nc')):
+        compute_monthly_climatology('VWS', months_by_phase, 'VWS')
+    if op.exists(op.join(local_path, 'Monthly_mean_RH600.nc')):
+        compute_monthly_climatology('RH600', months_by_phase, 'RH600')
+    return climate_df
