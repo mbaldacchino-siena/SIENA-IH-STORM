@@ -17,6 +17,8 @@ import cdsapi
 import pandas as pd
 import numpy as np
 
+from pathlib import Path
+
 
 
 def get_IBStrack(url,local_path,file_name):
@@ -79,24 +81,29 @@ def get_climate_index(url,local_path):
 #==============================================================================   
 
 def download_monthly_mean_SLP(dir_data,year_list):
-    # change years accorign to the slide period
-    c = cdsapi.Client()
-    c.retrieve(
-        'reanalysis-era5-single-levels-monthly-means',
-        {
-            'format': 'netcdf',
-            'product_type': 'monthly_averaged_reanalysis',
-            'variable': 'mean_sea_level_pressure',
-            'year': year_list,
-            'month': [
-                '01', '02', '03',
-                '04', '05', '06',
-                '07', '08', '09',
-                '10', '11', '12',
-            ],
-            'time': '00:00',
-        },
-        op.join(dir_data,'Monthly_mean_MSLP.nc'))
+
+    my_file = op.join(dir_data, "Monthly_mean_MSLP.nc")
+
+
+    if not Path(my_file).is_file():
+        # change years accorign to the slide period
+        c = cdsapi.Client()
+        c.retrieve(
+            'reanalysis-era5-single-levels-monthly-means',
+            {
+                'format': 'netcdf',
+                'product_type': 'monthly_averaged_reanalysis',
+                'variable': 'mean_sea_level_pressure',
+                'year': year_list,
+                'month': [
+                    '01', '02', '03',
+                    '04', '05', '06',
+                    '07', '08', '09',
+                    '10', '11', '12',
+                ],
+                'time': '00:00',
+            },
+            my_file)
 
 
 #==============================================================================
@@ -104,23 +111,27 @@ def download_monthly_mean_SLP(dir_data,year_list):
 #==============================================================================  
 
 def download_monthly_mean_SST(dir_data,year_list):
-    c = cdsapi.Client()
-    c.retrieve(
-        'reanalysis-era5-single-levels-monthly-means',
-        {
-            'format': 'netcdf',
-            'product_type': 'monthly_averaged_reanalysis',
-            'variable': 'sea_surface_temperature',
-            'year': year_list,
-            'month': [
-                '01', '02', '03',
-                '04', '05', '06',
-                '07', '08', '09',
-                '10', '11', '12',
-            ],
-            'time': '00:00',
-        },
-        op.join(dir_data,'Monthly_mean_SST.nc'))
+    my_file = op.join(dir_data, "Monthly_mean_SST.nc")
+
+
+    if not Path(my_file).is_file():
+        c = cdsapi.Client()
+        c.retrieve(
+            'reanalysis-era5-single-levels-monthly-means',
+            {
+                'format': 'netcdf',
+                'product_type': 'monthly_averaged_reanalysis',
+                'variable': 'sea_surface_temperature',
+                'year': year_list,
+                'month': [
+                    '01', '02', '03',
+                    '04', '05', '06',
+                    '07', '08', '09',
+                    '10', '11', '12',
+                ],
+                'time': '00:00',
+            },
+            my_file)
         
         
         
@@ -303,41 +314,47 @@ def compute_monthly_climatology(variable, months_by_phase, output_prefix, datase
 
 
 def download_wind_shear_data(dir_data, year_list):
-    c = cdsapi.Client()
-    out_path = op.join(dir_data, 'Monthly_mean_VWS_components.nc')
-    c.retrieve('reanalysis-era5-pressure-levels-monthly-means', {
-        'format': 'netcdf',
-        'product_type': 'monthly_averaged_reanalysis',
-        'variable': ['u_component_of_wind', 'v_component_of_wind'],
-        'pressure_level': ['200', '850'],
-        'year': year_list,
-        'month': ['01','02','03','04','05','06','07','08','09','10','11','12'],
-        'time': '00:00',
-    }, out_path)
-    ds = xr.open_dataset(out_path)
-    u_name = 'u' if 'u' in ds.data_vars else list(ds.data_vars)[0]
-    v_name = 'v' if 'v' in ds.data_vars else list(ds.data_vars)[1]
-    level_name = 'pressure_level' if 'pressure_level' in ds.coords else 'level'
-    u200 = ds[u_name].sel({level_name: 200})
-    u850 = ds[u_name].sel({level_name: 850})
-    v200 = ds[v_name].sel({level_name: 200})
-    v850 = ds[v_name].sel({level_name: 850})
-    vws = np.sqrt((u200 - u850) ** 2 + (v200 - v850) ** 2)
-    xr.Dataset({'vws': vws}).to_netcdf(op.join(dir_data, 'Monthly_mean_VWS.nc'))
-    ds.close()
+    out_path = op.join(dir_data, "Monthly_mean_VWS_components.nc")
+
+    if not Path(out_path).is_file():
+        c = cdsapi.Client()
+        c.retrieve('reanalysis-era5-pressure-levels-monthly-means', {
+            'format': 'netcdf',
+            'product_type': 'monthly_averaged_reanalysis',
+            'variable': ['u_component_of_wind', 'v_component_of_wind'],
+            'pressure_level': ['200', '850'],
+            'year': year_list,
+            'month': ['01','02','03','04','05','06','07','08','09','10','11','12'],
+            'time': '00:00',
+        }, out_path)
+    my_file = op.join(dir_data, "Monthly_mean_VWS.nc")
+    if not Path(my_file).is_file():
+        ds = xr.open_dataset(out_path)
+        u_name = 'u' if 'u' in ds.data_vars else list(ds.data_vars)[0]
+        v_name = 'v' if 'v' in ds.data_vars else list(ds.data_vars)[1]
+        level_name = 'pressure_level' if 'pressure_level' in ds.coords else 'level'
+        u200 = ds[u_name].sel({level_name: 200})
+        u850 = ds[u_name].sel({level_name: 850})
+        v200 = ds[v_name].sel({level_name: 200})
+        v850 = ds[v_name].sel({level_name: 850})
+        vws = np.sqrt((u200 - u850) ** 2 + (v200 - v850) ** 2)
+        xr.Dataset({"vws": vws}).to_netcdf(my_file)
+        ds.close()
 
 
 def download_humidity_data(dir_data, year_list):
-    c = cdsapi.Client()
-    c.retrieve('reanalysis-era5-pressure-levels-monthly-means', {
-        'format': 'netcdf',
-        'product_type': 'monthly_averaged_reanalysis',
-        'variable': 'relative_humidity',
-        'pressure_level': '600',
-        'year': year_list,
-        'month': ['01','02','03','04','05','06','07','08','09','10','11','12'],
-        'time': '00:00',
-    }, op.join(dir_data, 'Monthly_mean_RH600.nc'))
+    my_file = op.join(dir_data, "Monthly_mean_RH600.nc")
+    if not Path(my_file).is_file():
+        c = cdsapi.Client()
+        c.retrieve('reanalysis-era5-pressure-levels-monthly-means', {
+            'format': 'netcdf',
+            'product_type': 'monthly_averaged_reanalysis',
+            'variable': 'relative_humidity',
+            'pressure_level': '600',
+            'year': year_list,
+            'month': ['01','02','03','04','05','06','07','08','09','10','11','12'],
+            'time': '00:00',
+        }, my_file)
 
 
 def build_pooled_and_phase_climatologies(period, climate_index='ONI', threshold=0.5, fetch_new=False):
