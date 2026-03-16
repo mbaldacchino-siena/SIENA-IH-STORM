@@ -2,13 +2,14 @@
 """STORM module for simulation of the TC track.
 SIENA extension: optional phase-aware offsets in pooled coefficients.
 """
+
 import numpy as np
 from SELECT_BASIN import Basins_WMO
 from siena_utils import phase_code, normalize_phase
 import os
 import sys
 
-dir_path=os.path.dirname(os.path.realpath(sys.argv[0]))
+dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
 
@@ -28,10 +29,10 @@ def find_lat_index_bins(basin, lat):
     return np.floor(float(lat - lat0) / base)
 
 
-def Check_if_landfall(lat,lon,lat1,lon0,land_mask):
-    x_coord=int(10*(lon-lon0))
-    y_coord=int(10*(lat1-lat))
-    return land_mask[y_coord,x_coord]
+def Check_if_landfall(lat, lon, lat1, lon0, land_mask):
+    x_coord = int(10 * (lon - lon0))
+    y_coord = int(10 * (lat1 - lat))
+    return land_mask[y_coord, x_coord]
 
 
 def TC_movement(lon_genesis_list, lat_genesis_list, basin, phase=None):
@@ -107,8 +108,8 @@ def TC_movement(lon_genesis_list, lat_genesis_list, basin, phase=None):
                 ] = row
                 g_en = g_ln = d_en = d_ln = 0.0
             if len(latlijst) == 1:
-                dlat0 = np.random.normal(Dlat0mu, Dlat0std, 1)
-                dlon0 = np.random.normal(Dlon0mu, Dlon0std, 1)
+                dlat0 = np.random.normal(Dlat0mu, Dlat0std)  # scalar, not array
+                dlon0 = np.random.normal(Dlon0mu, Dlon0std)  # scalar, not array
             phase_lat = g_en if ph_code == 2 else g_ln if ph_code == 0 else 0.0
             phase_lon = d_en if ph_code == 2 else d_ln if ph_code == 0 else 0.0
             dlat1 = float(a_lat0 + a_lat1 * dlat0 + a_lat2 * lat + phase_lat)
