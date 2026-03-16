@@ -23,116 +23,132 @@ import preprocessing
 from siena_utils import solve_ridge
 import os
 import sys
-pd.options.mode.chained_assignment=None # default='warn'
-dir_path=os.path.dirname(os.path.realpath(sys.argv[0]))
+
+pd.options.mode.chained_assignment = None  # default='warn'
+dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
+
 
 def monthly_mean_pressure_STORM(data):
     """
     Create the monthly mean MSLP fields. This function outputs a txt-file of a global field of monthly mean MSLP for every month.
-    
+
     Parameters
     ----------
     data : dataset with monthly mean MSLP values for 38 years of data (ERA-5)
 
     """
-    mslp=data.msl.values
-    lon=data.longitude.values
-    lat=data.latitude.values
-    
-    for month in range(0,12):
-        mean_matrix=np.zeros((len(lat),len(lon)))
-        
-        for t in range(0,int(nyear)):    
-            #loop over 38 years
-            mean_matrix=mean_matrix+mslp[month+t*12,:,:]/100.
-            
-        mean_matrix=mean_matrix/nyear                         
-        np.savetxt(os.path.join(__location__,'Monthly_mean_MSLP_'+str(month+1)+'.txt'),mean_matrix)
-        
-        
+    mslp = data.msl.values
+    lon = data.longitude.values
+    lat = data.latitude.values
+
+    for month in range(0, 12):
+        mean_matrix = np.zeros((len(lat), len(lon)))
+
+        for t in range(0, int(nyear)):
+            # loop over 38 years
+            mean_matrix = mean_matrix + mslp[month + t * 12, :, :] / 100.0
+
+        mean_matrix = mean_matrix / nyear
+        np.savetxt(
+            os.path.join(__location__, "Monthly_mean_MSLP_" + str(month + 1) + ".txt"),
+            mean_matrix,
+        )
+
+
 def monthly_mean_pressure(data):
     """
     Create the monthly mean MSLP fields. This do function outputs a txt-file of a global field of monthly mean MSLP for every month.
-    This function consider number of months (e.g. january) instead of years. So it can be use as climatalogies like ENSO    
+    This function consider number of months (e.g. january) instead of years. So it can be use as climatalogies like ENSO
     Parameters
     ----------
     data : dataset with monthly mean MSLP values for a number of years of data (ERA-5)
 
     @itxasoOderiz 2024
 
-    """  
+    """
     # Group by month and take the sum
-    data_sum = data.groupby('valid_time.month').sum(dim='valid_time')
+    data_sum = data.groupby("valid_time.month").sum(dim="valid_time")
 
-    for nmonth in range(0,12):
-        nmonth1=nmonth+1
-        print('SLP fields for month:', nmonth1)
-      
-        #sum all months equal to nmonth1
+    for nmonth in range(0, 12):
+        nmonth1 = nmonth + 1
+        print("SLP fields for month:", nmonth1)
+
+        # sum all months equal to nmonth1
         month_sum = data_sum.sel(month=nmonth1)
 
         data_month = data.sel(valid_time=data["valid_time.month"] == nmonth1)
 
-        #mean considering all number of months, not years 
+        # mean considering all number of months, not years
         month_mean = month_sum / data_month.sizes["valid_time"]
 
-        #save to a txt
-        mean_matrix=month_mean.msl.values/100 # convert to milibars
-        np.savetxt(os.path.join(__location__,'Monthly_mean_MSLP_'+str(nmonth1)+'.txt'),mean_matrix)   
+        # save to a txt
+        mean_matrix = month_mean.msl.values / 100  # convert to milibars
+        np.savetxt(
+            os.path.join(__location__, "Monthly_mean_MSLP_" + str(nmonth1) + ".txt"),
+            mean_matrix,
+        )
 
-def monthly_mean_sst_STORM(data,nyear):
+
+def monthly_mean_sst_STORM(data, nyear):
     """
     Create the monthly mean SST fields. This function outputs a txt-file of a global field of monthly mean SSTs for every month.
-    
+
     Parameters
     ----------
     data : dataset with monthly mean SST values for n years of data (ERA-5)
 
     """
-    sst=data.sst.values
-    lon=data.longitude.values
-    lat=data.latitude.values
-    
-    for month in range(0,12):
-        mean_matrix=np.zeros((len(lat),len(lon)))
-        
-        for t in range(0,int(nyear)):
-            mean_matrix=mean_matrix+sst[month+t*12,:,:]
-    
-        mean_matrix=mean_matrix/nyear
-        np.savetxt(os.path.join(__location__,'Monthly_mean_SST_'+str(month+1)+'.txt'),mean_matrix)
-        
-        
+    sst = data.sst.values
+    lon = data.longitude.values
+    lat = data.latitude.values
+
+    for month in range(0, 12):
+        mean_matrix = np.zeros((len(lat), len(lon)))
+
+        for t in range(0, int(nyear)):
+            mean_matrix = mean_matrix + sst[month + t * 12, :, :]
+
+        mean_matrix = mean_matrix / nyear
+        np.savetxt(
+            os.path.join(__location__, "Monthly_mean_SST_" + str(month + 1) + ".txt"),
+            mean_matrix,
+        )
+
+
 def monthly_mean_sst(data):
     """
     Create the monthly mean SST fields. This do function outputs a txt-file of a global field of monthly mean MSLP for every month.
-    This function consider number of months (e.g. january) instead of years. So it can be use as climatalogies like ENSO    
+    This function consider number of months (e.g. january) instead of years. So it can be use as climatalogies like ENSO
     Parameters
     ----------
     data : dataset with monthly mean MSLP values for a number of years of data (ERA-5)
 
     @itxasoOderiz 2024
 
-    """  
+    """
     # Group by month and take the sum
     data_sum = data.groupby("valid_time.month").sum(dim="valid_time")
 
-    for nmonth in range(0,12):
-        nmonth1=nmonth+1
-        print('SST fields for month:', nmonth1)
-      
-        #sum all months equal to nmonth1
+    for nmonth in range(0, 12):
+        nmonth1 = nmonth + 1
+        print("SST fields for month:", nmonth1)
+
+        # sum all months equal to nmonth1
         month_sum = data_sum.sel(month=nmonth1)
 
         data_month = data.sel(valid_time=data["valid_time.month"] == nmonth1)
 
-        #mean considering all number of months, not years 
+        # mean considering all number of months, not years
         month_mean = month_sum / data_month.sizes["valid_time"]
 
-        #save to a txt
-        mean_matrix=month_mean.sst.values 
-        np.savetxt(os.path.join(__location__,'Monthly_mean_SST_'+str(nmonth1)+'.txt'),mean_matrix)         
+        # save to a txt
+        mean_matrix = month_mean.sst.values
+        np.savetxt(
+            os.path.join(__location__, "Monthly_mean_SST_" + str(nmonth1) + ".txt"),
+            mean_matrix,
+        )
+
 
 def monthly_mean_vws(data):
     """
@@ -205,10 +221,10 @@ def monthly_mean_rh(data):
         )
 
 
-def check_season(idx,month):
+def check_season(idx, month):
     """
-    Check if TC occurred in TC season. 
-    
+    Check if TC occurred in TC season.
+
     Parameters
     ----------
     idx : Basin index (EP=0,NA=1,NI=2,SI=3,SP=4,WP=5)
@@ -216,311 +232,373 @@ def check_season(idx,month):
 
     Returns
     -------
-    check : 0 if TC did not occur in TC season, 1 if TC did occur in TC season. 
+    check : 0 if TC did not occur in TC season, 1 if TC did occur in TC season.
     """
-    check=0
-    if idx==0 or idx==1:
-        if month>5 and month<12:
-            check=1
-    elif idx==2:
-        if month>3 and month<7:
-            check=1
-        elif month>8 and month<12:
-            check=1
-    elif idx==3 or idx==4:
-        if month<5 or month>10:
-            check=1
-    elif idx==5:
-        if month>4 and month<12:
-            check=1
+    check = 0
+    if idx == 0 or idx == 1:
+        if month > 5 and month < 12:
+            check = 1
+    elif idx == 2:
+        if month > 3 and month < 7:
+            check = 1
+        elif month > 8 and month < 12:
+            check = 1
+    elif idx == 3 or idx == 4:
+        if month < 5 or month > 10:
+            check = 1
+    elif idx == 5:
+        if month > 4 and month < 12:
+            check = 1
     return check
 
-def Vmax_function(DP,A,B):
-    """  
+
+def Vmax_function(DP, A, B):
+    """
     This is the wind-pressure relationship. Here, we calculate the values of the coefficients
-    A en B for the wind and pressure found in the dataset. 
+    A en B for the wind and pressure found in the dataset.
     Parameters
     ----------
     DP : Difference between environmental pressure and central pressure (hPa)
     A,B : Coefficients for wind-pressure relationship.
     """
-    return A*(DP)**B
+    return A * (DP) ** B
 
-def wind_pressure_relationship(idx_basin,months):
+
+def wind_pressure_relationship(idx_basin, months):
     """
     This function calculates the coefficients for the wind-pressure relationship.
     The wind-pressure relationship is based on the empirical wind-pressure relationship (for overview, see Harper 2002:
-        Tropical Cyclone Parameter Estimation in the Australian Region: Wind-Pressure Relationships and 
+        Tropical Cyclone Parameter Estimation in the Australian Region: Wind-Pressure Relationships and
         Related Issues for Engineering Planning and Design - A Discussion Paper)
-        
+
     Adapted by e.g. Atkinson and Holliday (1977), Love and Murphy (1985) and Crane (1985)
 
     This script saves the coefficients list for the wind-pressure relationship, per month as an npy-file.
     """
-    latlist=np.load(os.path.join(__location__,'LATLIST_INTERP.npy'),allow_pickle=True).item()
-    lonlist=np.load(os.path.join(__location__,'LONLIST_INTERP.npy'),allow_pickle=True).item()
-    windlist=np.load(os.path.join(__location__,'WINDLIST_INTERP.npy'),allow_pickle=True).item()
-    preslist=np.load(os.path.join(__location__,'PRESLIST_INTERP.npy'),allow_pickle=True).item()
-    monthlist=np.load(os.path.join(__location__,'MONTHLIST_INTERP.npy'),allow_pickle=True).item()
-    basinlist=np.load(os.path.join(__location__,'BASINLIST_INTERP.npy'),allow_pickle=True).item()
+    latlist = np.load(
+        os.path.join(__location__, "LATLIST_INTERP.npy"), allow_pickle=True
+    ).item()
+    lonlist = np.load(
+        os.path.join(__location__, "LONLIST_INTERP.npy"), allow_pickle=True
+    ).item()
+    windlist = np.load(
+        os.path.join(__location__, "WINDLIST_INTERP.npy"), allow_pickle=True
+    ).item()
+    preslist = np.load(
+        os.path.join(__location__, "PRESLIST_INTERP.npy"), allow_pickle=True
+    ).item()
+    monthlist = np.load(
+        os.path.join(__location__, "MONTHLIST_INTERP.npy"), allow_pickle=True
+    ).item()
+    basinlist = np.load(
+        os.path.join(__location__, "BASINLIST_INTERP.npy"), allow_pickle=True
+    ).item()
 
-    data=xr.open_dataset(os.path.join(__location__,'Monthly_mean_SST.nc'))
-    
-    lon=data.longitude.values
-    lat=data.latitude.values
+    data = xr.open_dataset(os.path.join(__location__, "Monthly_mean_SST.nc"))
+
+    lon = data.longitude.values
+    lat = data.latitude.values
     data.close()
 
-    pres_basin={i:[] for i in range(0,6)}
-    wind_basin={i:[] for i in range(0,6)}
-    month_basin={i:[] for i in range(0,6)}
-    
+    pres_basin = {i: [] for i in range(0, 6)}
+    wind_basin = {i: [] for i in range(0, 6)}
+    month_basin = {i: [] for i in range(0, 6)}
+
     for i in range(len(latlist)):
-        if len(latlist[i])>0:            
-            idx=basinlist[i][0]
-            month=monthlist[i][0]            
-            check=check_season(idx,month) 
-            #print(idx,month,check)
-            if check==1:
-                MSLP=np.loadtxt(os.path.join(__location__,'Monthly_mean_MSLP_'+str(month)+'.txt'))                
-                for j in range(0,len(latlist[i])):
-                    #Wind needs to be greater than 15 kt.                         
-                        latn=np.abs(lat-latlist[i][j]).argmin()
-                        lonn=np.abs(lon-lonlist[i][j]).argmin()                           
-                        if preslist[i][j]>0 and MSLP[latn][lonn]-preslist[i][j]>0 and windlist[i][j]>15.*0.5144444:  
-                            pres_basin[idx].append(MSLP[latn][lonn]-preslist[i][j])
-                            wind_basin[idx].append(windlist[i][j])
-                            month_basin[idx].append(month)
-      
-    coeff_list={i:[] for i in range(0,6)}    
-    
-    
-    #months=[[6,7,8,9,10,11],[6,7,8,9,10,11],[9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
+        if len(latlist[i]) > 0:
+            idx = basinlist[i][0]
+            month = monthlist[i][0]
+            check = check_season(idx, month)
+            # print(idx,month,check)
+            if check == 1:
+                MSLP = np.loadtxt(
+                    os.path.join(
+                        __location__, "Monthly_mean_MSLP_" + str(month) + ".txt"
+                    )
+                )
+                for j in range(0, len(latlist[i])):
+                    # Wind needs to be greater than 15 kt.
+                    latn = np.abs(lat - latlist[i][j]).argmin()
+                    lonn = np.abs(lon - lonlist[i][j]).argmin()
+                    if (
+                        preslist[i][j] > 0
+                        and MSLP[latn][lonn] - preslist[i][j] > 0
+                        and windlist[i][j] > 15.0 * 0.5144444
+                    ):
+                        pres_basin[idx].append(MSLP[latn][lonn] - preslist[i][j])
+                        wind_basin[idx].append(windlist[i][j])
+                        month_basin[idx].append(month)
 
-    
-    #months=[[6,7,8,9,10,11],[6,7,8,9,10,11],[4,5,6,9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
-    
-    for ii in range(len(idx_basin)):  
-        
-        idx=idx_basin[ii]     
-        print('analasing: ',idx,'basin in wind relationship')
-        coeff_list[idx]={i:[] for i in months[idx]}    
-        df=pd.DataFrame({"Wind":wind_basin[idx],"Pressure":pres_basin[idx],"Month":month_basin[idx]})        
+    coeff_list = {i: [] for i in range(0, 6)}
+
+    # months=[[6,7,8,9,10,11],[6,7,8,9,10,11],[9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
+
+    # months=[[6,7,8,9,10,11],[6,7,8,9,10,11],[4,5,6,9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
+
+    for ii in range(len(idx_basin)):
+        idx = idx_basin[ii]
+        print("analasing: ", idx, "basin in wind relationship")
+        coeff_list[idx] = {i: [] for i in months[idx]}
+        df = pd.DataFrame(
+            {
+                "Wind": wind_basin[idx],
+                "Pressure": pres_basin[idx],
+                "Month": month_basin[idx],
+            }
+        )
         for i in range(len(months[idx])):
-            m=months[idx][i]
-            df1=df[(df["Month"]==m)]    
-            step=2. #Group in 2 m/s bins to eliminate the effect of more weaker storms (that might skew the fit)
-            to_bin=lambda x:np.floor(x/step)*step            
-            df1["windbin"]=df1.Wind.map(to_bin)                
-            minpres=df1.groupby(["windbin"]).agg({"Pressure":"mean"})["Pressure"]   
-            maxwind=np.unique(df1["windbin"])  
-            
-            try:     
-                opt,l=curve_fit(Vmax_function,minpres,maxwind,maxfev=5000)
-                [a,b]=opt
-                coeff_list[idx][m]=[a,b]
-        
-            except RuntimeError:
-                print('Optimal parameters not found')
-            except TypeError:
-                print('Too few items')
-            
-    np.save(os.path.join(__location__,'COEFFICIENTS_WPR_PER_MONTH.npy'),coeff_list) 
+            m = months[idx][i]
+            df1 = df[(df["Month"] == m)]
+            step = 2.0  # Group in 2 m/s bins to eliminate the effect of more weaker storms (that might skew the fit)
+            to_bin = lambda x: np.floor(x / step) * step
+            df1["windbin"] = df1.Wind.map(to_bin)
+            minpres = df1.groupby(["windbin"]).agg({"Pressure": "mean"})["Pressure"]
+            maxwind = np.unique(df1["windbin"])
 
-def MPI_function(T,A,B,C):
+            try:
+                opt, l = curve_fit(Vmax_function, minpres, maxwind, maxfev=5000)
+                [a, b] = opt
+                coeff_list[idx][m] = [a, b]
+
+            except RuntimeError:
+                print("Optimal parameters not found")
+            except TypeError:
+                print("Too few items")
+
+    np.save(os.path.join(__location__, "COEFFICIENTS_WPR_PER_MONTH.npy"), coeff_list)
+
+
+def MPI_function(T, A, B, C):
     """
     Fit the MPI function to the data. This function returns the optimal coefficients.
     Parameters
     ----------
     T : Sea-surface temperature in Celcius.
-    A,B,C : coefficients 
+    A,B,C : coefficients
 
     """
-    return A+B*np.exp(C*(T-30.))
+    # ---- FIX: clamp exponent to prevent overflow ----
+    exponent = np.clip(C * (np.asarray(T, dtype=float) - 30.0), -500, 500)
+    return A + B * np.exp(exponent)
 
-def Calculate_P(V,Penv,a,b):
+
+def Calculate_P(V, Penv, a, b):
     """
     Convert Vmax to Pressure following the empirical wind-pressure relationship (Harper 2002, Atkinson and Holliday 1977)
-    
-    Input: 
+
+    Input:
         Vmax: 10-min mean maximum wind speed in m/s
         Penv: environmental pressure (hPa)
         a,b: coefficients. See Atkinson_Holliday_wind_pressure_relationship.py
-    
+
     Returns:
         Pc: central pressure in the eye
-    
+
     """
-    
-    Pc=Penv-(V/a)**(1./b)  
+
+    Pc = Penv - (V / a) ** (1.0 / b)
     return Pc
 
-def calculate_MPI_fields(idx_basin,months,months_for_coef,mpi_bounds):  
+
+def calculate_MPI_fields(idx_basin, months, months_for_coef, mpi_bounds):
     """
     Calculate the MPI fields from the pressure drop and environmental conditions.
     """
     # =============================================================================
     # Calculate the MPI and SST - NOTE: THIS PART TAKES VERY LOOONG
     # =============================================================================
-    data=xr.open_dataset(os.path.join(__location__,'Monthly_mean_SST.nc'))
-     
-    lon=data.longitude.values
-    lat=data.latitude.values
+    data = xr.open_dataset(os.path.join(__location__, "Monthly_mean_SST.nc"))
+
+    lon = data.longitude.values
+    lat = data.latitude.values
     data.close()
-    latlist=np.load(os.path.join(__location__,'LATLIST_INTERP.npy'),allow_pickle=True).item()
-    lonlist=np.load(os.path.join(__location__,'LONLIST_INTERP.npy'),allow_pickle=True).item()
-    monthlist=np.load(os.path.join(__location__,'MONTHLIST_INTERP.npy'),allow_pickle=True).item()
-    basinlist=np.load(os.path.join(__location__,'BASINLIST_INTERP.npy'),allow_pickle=True).item()
-    preslist=np.load(os.path.join(__location__,'PRESLIST_INTERP.npy'),allow_pickle=True).item()
+    latlist = np.load(
+        os.path.join(__location__, "LATLIST_INTERP.npy"), allow_pickle=True
+    ).item()
+    lonlist = np.load(
+        os.path.join(__location__, "LONLIST_INTERP.npy"), allow_pickle=True
+    ).item()
+    monthlist = np.load(
+        os.path.join(__location__, "MONTHLIST_INTERP.npy"), allow_pickle=True
+    ).item()
+    basinlist = np.load(
+        os.path.join(__location__, "BASINLIST_INTERP.npy"), allow_pickle=True
+    ).item()
+    preslist = np.load(
+        os.path.join(__location__, "PRESLIST_INTERP.npy"), allow_pickle=True
+    ).item()
 
-    sst_list={i:[] for i in range(0,6)}
-    month_list={i:[] for i in range(0,6)}
-    intensity_list={i:[] for i in range(0,6)}
-    pressure_drop_list={i:[] for i in range(0,6)}
-    
-    MSLP_field_all={i:[] for i in range(1,13)}
-    SST_field_all={i:[] for i in range(1,13)}
-    
-    for month in range(1,13):
-        MSLP_field_all[month]=np.loadtxt(os.path.join(__location__,'Monthly_mean_MSLP_'+str(month)+'.txt'))
-        SST_field_all[month]=np.loadtxt(os.path.join(__location__,'Monthly_mean_SST_'+str(month)+'.txt'))
-    
+    sst_list = {i: [] for i in range(0, 6)}
+    month_list = {i: [] for i in range(0, 6)}
+    intensity_list = {i: [] for i in range(0, 6)}
+    pressure_drop_list = {i: [] for i in range(0, 6)}
+
+    MSLP_field_all = {i: [] for i in range(1, 13)}
+    SST_field_all = {i: [] for i in range(1, 13)}
+
+    for month in range(1, 13):
+        MSLP_field_all[month] = np.loadtxt(
+            os.path.join(__location__, "Monthly_mean_MSLP_" + str(month) + ".txt")
+        )
+        SST_field_all[month] = np.loadtxt(
+            os.path.join(__location__, "Monthly_mean_SST_" + str(month) + ".txt")
+        )
+
     for i in range(len(latlist)):
-        if len(preslist[i])>0:
-            idx=basinlist[i][0]
-            month=monthlist[i][0]
-            
-            SST_field=SST_field_all[month]
-            MSLP_field=MSLP_field_all[month]
-            
+        if len(preslist[i]) > 0:
+            idx = basinlist[i][0]
+            month = monthlist[i][0]
+
+            SST_field = SST_field_all[month]
+            MSLP_field = MSLP_field_all[month]
+
             for j in range(len(preslist[i])):
-                lat_index=np.abs(lat-latlist[i][j]).argmin()
-                lon_index=np.abs(lon-lonlist[i][j]).argmin()
-    
-                if SST_field[lat_index,lon_index]>288.15 and preslist[i][j]>0: #only use SST>15C for the fit.
-                    sst_list[idx].append(SST_field[lat_index,lon_index]-273.15)
+                lat_index = np.abs(lat - latlist[i][j]).argmin()
+                lon_index = np.abs(lon - lonlist[i][j]).argmin()
+
+                if (
+                    SST_field[lat_index, lon_index] > 288.15 and preslist[i][j] > 0
+                ):  # only use SST>15C for the fit.
+                    sst_list[idx].append(SST_field[lat_index, lon_index] - 273.15)
                     intensity_list[idx].append(preslist[i][j])
-                    pressure_drop_list[idx].append(MSLP_field[lat_index,lon_index]-preslist[i][j])
+                    pressure_drop_list[idx].append(
+                        MSLP_field[lat_index, lon_index] - preslist[i][j]
+                    )
                     month_list[idx].append(month)
-                    
-    #=============================================================================
-    #Calculate the MPI coefficients (see DeMaria & Kaplan 1994)
-    #=============================================================================
-    basins=['EP','NA','NI','SI','SP','WP']
-    coeflist={i:[] for i in range(0,6)}
-    #Only consider those in the hurricane season
-    #months          =[[6,7,8,9,10,11],[6,7,8,9,10,11],[9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
-    #months_for_coef =[[6,7,8,9,10,10],[6,7,8,9,10,11],[10,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
 
-    #months=[[6,7,8,9,10,11],[6,7,8,9,10,11],[4,5,6,9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
-    #months_for_coef=[[6,7,8,9,10,10],[6,7,8,9,10,11],[6,6,6,10,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
-    for ii in range(len(idx_basin)):  
-        
-        idx=idx_basin[ii]
-        
-        coeflist[idx]={i:[] for i in months[idx]}
-        
-        df=pd.DataFrame({'Drop':pressure_drop_list[idx],'SST':sst_list[idx],'Month':month_list[idx]})
-        
-        df=df[df["Drop"]>-99999.]
-        
+    # =============================================================================
+    # Calculate the MPI coefficients (see DeMaria & Kaplan 1994)
+    # =============================================================================
+    basins = ["EP", "NA", "NI", "SI", "SP", "WP"]
+    coeflist = {i: [] for i in range(0, 6)}
+    # Only consider those in the hurricane season
+    # months          =[[6,7,8,9,10,11],[6,7,8,9,10,11],[9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
+    # months_for_coef =[[6,7,8,9,10,10],[6,7,8,9,10,11],[10,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
+
+    # months=[[6,7,8,9,10,11],[6,7,8,9,10,11],[4,5,6,9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
+    # months_for_coef=[[6,7,8,9,10,10],[6,7,8,9,10,11],[6,6,6,10,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
+    for ii in range(len(idx_basin)):
+        idx = idx_basin[ii]
+
+        coeflist[idx] = {i: [] for i in months[idx]}
+
+        df = pd.DataFrame(
+            {
+                "Drop": pressure_drop_list[idx],
+                "SST": sst_list[idx],
+                "Month": month_list[idx],
+            }
+        )
+
+        df = df[df["Drop"] > -99999.0]
+
         for i in range(len(months[idx])):
-            m=months_for_coef[idx][i]
-            mc=months[idx][i]
-            print(idx,mc)
-            if idx==2 and m<7.:
-                df1=df[(df["Month"]==4) | (df["Month"]==5) | (df["Month"]==6)]
-            
-            elif idx==2 and m>7.:
-                df1=df[(df["Month"]==9) | (df["Month"]==10) | (df["Month"]==11)]
-            
-            elif m>10 and idx==3 or idx==4:
-                df1=df[(df['Month']==11) | (df['Month']==12)]
-            
-            elif m<5 and idx==3 or idx==4:
-                df1=df[(df['Month']==1) |(df['Month']==2) | (df['Month']==3)| (df['Month']==4) ]             
-            
-            else:            
-                df1=df[(df["Month"]==m)]
-    
-            df1=df1[(df1["SST"]<30.)]
-    
-            step=1.0
-            to_bin=lambda x:np.floor(x/step)*step
-            df1["sstbin"]=df1.SST.map(to_bin)
-            
-              
-            droplist=df1.groupby(["sstbin"]).agg({"Drop":"max"})["Drop"]   
-            sstlist=df1.groupby(["sstbin"]).agg({"SST":"mean"})["SST"]       
-            
-            try:         
-                opt,l=curve_fit(MPI_function,sstlist,droplist,maxfev=5000)
-                [a,b,c]=opt
-                coeflist[idx][mc]=[a,b,c] 
+            m = months_for_coef[idx][i]
+            mc = months[idx][i]
+            print(idx, mc)
+            if idx == 2 and m < 7.0:
+                df1 = df[(df["Month"] == 4) | (df["Month"] == 5) | (df["Month"] == 6)]
+
+            elif idx == 2 and m > 7.0:
+                df1 = df[(df["Month"] == 9) | (df["Month"] == 10) | (df["Month"] == 11)]
+
+            elif m > 10 and idx == 3 or idx == 4:
+                df1 = df[(df["Month"] == 11) | (df["Month"] == 12)]
+
+            elif m < 5 and idx == 3 or idx == 4:
+                df1 = df[
+                    (df["Month"] == 1)
+                    | (df["Month"] == 2)
+                    | (df["Month"] == 3)
+                    | (df["Month"] == 4)
+                ]
+
+            else:
+                df1 = df[(df["Month"] == m)]
+
+            df1 = df1[(df1["SST"] < 30.0)]
+
+            step = 1.0
+            to_bin = lambda x: np.floor(x / step) * step
+            df1["sstbin"] = df1.SST.map(to_bin)
+
+            droplist = df1.groupby(["sstbin"]).agg({"Drop": "max"})["Drop"]
+            sstlist = df1.groupby(["sstbin"]).agg({"SST": "mean"})["SST"]
+
+            try:
+                opt, l = curve_fit(MPI_function, sstlist, droplist, maxfev=5000)
+                [a, b, c] = opt
+                coeflist[idx][mc] = [a, b, c]
             except RuntimeError:
-                print('Optimal parameters not found for '+str(basins[idx]))
+                print("Optimal parameters not found for " + str(basins[idx]))
             except TypeError:
-                print('Too few items')
-                
-            
-    np.save(os.path.join(__location__,'COEFFICIENTS_MPI_PRESSURE_DROP_MONTH.npy'),coeflist)
+                print("Too few items")
+
+    np.save(
+        os.path.join(__location__, "COEFFICIENTS_MPI_PRESSURE_DROP_MONTH.npy"), coeflist
+    )
     # =============================================================================
-    #  Calculate the new MPI in hPa         
+    #  Calculate the new MPI in hPa
     # =============================================================================
-    
-    #original
-    #months=[[6,7,8,9,10,11],[6,7,8,9,10,11],[4,5,6,9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
 
-    #these are the lowest mpi values per basin and serve as the lower bound, derived from Bister & Emanuel 2002
-    #mpi_bounds=[[860,880,900,900,880,860],[920,900,900,900,880,880],[840,860,880,900,880,860],[840,880,860,860,840,860],[840,840,860,860,840,840],[860,860,860,870,870,860,860]]
-    
-    #for idx in range(0,6):
-    
-    for ii in range(len(idx_basin)):  
-        
-        idx=idx_basin[ii]
-        for m,midx in zip(months[idx],range(len(months[idx]))):
-            print(idx,m,midx)
+    # original
+    # months=[[6,7,8,9,10,11],[6,7,8,9,10,11],[4,5,6,9,10,11],[1,2,3,4,11,12],[1,2,3,4,11,12],[5,6,7,8,9,10,11]]
 
-            [A,B,C]=coeflist[idx][m]    
-        
-            SST=SST_field_all[m]
-            MSLP=MSLP_field_all[m]
-            
-            lat0,lat1,lon0,lon1=preprocessing.BOUNDARIES_BASINS(idx)
-    
-            lat_0=np.abs(lat-lat1).argmin()
-            lat_1=np.abs(lat-lat0).argmin()
-            lon_0=np.abs(lon-lon0).argmin()
-            lon_1=np.abs(lon-lon1).argmin()
-            
-            SST_field=SST[lat_0:lat_1,lon_0:lon_1]
-            MSLP_field=MSLP[lat_0:lat_1,lon_0:lon_1]
-            PC_MATRIX=np.zeros((SST_field.shape))
-            PC_MATRIX[:]=np.nan
-    
-            PRESDROP=MPI_function(SST_field-273.15,A,B,C) #Vmax is given in m/s
-            PC_MATRIX=MSLP_field-PRESDROP
-            boundary=mpi_bounds[idx][midx]
-            
-            PC_MATRIX[PC_MATRIX<boundary]=boundary
-    
-            np.savetxt(os.path.join(__location__,'MPI_FIELDS_'+str(idx)+str(m)+'.txt'),PC_MATRIX)
+    # these are the lowest mpi values per basin and serve as the lower bound, derived from Bister & Emanuel 2002
+    # mpi_bounds=[[860,880,900,900,880,860],[920,900,900,900,880,880],[840,860,880,900,880,860],[840,880,860,860,840,860],[840,840,860,860,840,840],[860,860,860,870,870,860,860]]
 
-def PRESFUNCTION(X,a,b,c,d):
+    # for idx in range(0,6):
+
+    for ii in range(len(idx_basin)):
+        idx = idx_basin[ii]
+        for m, midx in zip(months[idx], range(len(months[idx]))):
+            print(idx, m, midx)
+
+            [A, B, C] = coeflist[idx][m]
+
+            SST = SST_field_all[m]
+            MSLP = MSLP_field_all[m]
+
+            lat0, lat1, lon0, lon1 = preprocessing.BOUNDARIES_BASINS(idx)
+
+            lat_0 = np.abs(lat - lat1).argmin()
+            lat_1 = np.abs(lat - lat0).argmin()
+            lon_0 = np.abs(lon - lon0).argmin()
+            lon_1 = np.abs(lon - lon1).argmin()
+
+            SST_field = SST[lat_0:lat_1, lon_0:lon_1]
+            MSLP_field = MSLP[lat_0:lat_1, lon_0:lon_1]
+            PC_MATRIX = np.zeros((SST_field.shape))
+            PC_MATRIX[:] = np.nan
+
+            PRESDROP = MPI_function(SST_field - 273.15, A, B, C)  # Vmax is given in m/s
+            PC_MATRIX = MSLP_field - PRESDROP
+            boundary = mpi_bounds[idx][midx]
+
+            PC_MATRIX[PC_MATRIX < boundary] = boundary
+
+            np.savetxt(
+                os.path.join(__location__, "MPI_FIELDS_" + str(idx) + str(m) + ".txt"),
+                PC_MATRIX,
+            )
+
+
+def PRESFUNCTION(X, a, b, c, d):
     """
-    Fit the data to the pressure function. 
+    Fit the data to the pressure function.
     Parameters
     ----------
     X : array of change in pressure and difference between pressure and mpi ([dp0,p-mpi])
     a,b,c,d : Coefficients
 
     """
-    dp,presmpi=X
-    return a+b*dp+c*np.exp(-d*presmpi)
+    dp, presmpi = X
+    return a + b * dp + c * np.exp(-d * presmpi)
 
-def PRESEXPECTED(dp,presmpi,a,b,c,d):
+
+def PRESEXPECTED(dp, presmpi, a, b, c, d):
     """
-    Calculate the forward change in pressure (dp1, p[i+1]-p[i])    
+    Calculate the forward change in pressure (dp1, p[i+1]-p[i])
 
     Parameters
     ----------
@@ -533,9 +611,11 @@ def PRESEXPECTED(dp,presmpi,a,b,c,d):
     dp1_list : array of forward change in pressure (dp1, p[i+1]-p[i])
 
     """
-    dp1_list=[]
+    dp1_list = []
     for k in range(len(dp)):
-        dp1_list.append(a+b*dp[k]+c*np.exp(-d*presmpi[k]))
+        # ---- FIX: clamp exponent to prevent overflow ----
+        exponent = -d * max(0.0, presmpi[k])
+        dp1_list.append(a + b * dp[k] + c * np.exp(exponent))
     return dp1_list
 
 
