@@ -1,10 +1,9 @@
-# -*- coding: utf-8 -*-
 """
 This module is part of the STORM model
 
-For more information, please see 
-Bloemendaal, N., Haigh, I.D., de Moel, H. et al. 
-Generation of a global synthetic tropical cyclone hazard dataset using STORM. 
+For more information, please see
+Bloemendaal, N., Haigh, I.D., de Moel, H. et al.
+Generation of a global synthetic tropical cyclone hazard dataset using STORM.
 Sci Data 7, 40 (2020). https://doi.org/10.1038/s41597-020-0381-2
 
 Functions described here are part of the data pre-processing and calculate the environmental
@@ -339,6 +338,8 @@ def wind_pressure_relationship(idx_basin, months):
         idx = idx_basin[ii]
         print("analasing: ", idx, "basin in wind relationship")
         coeff_list[idx] = {i: [] for i in months[idx]}
+
+        # ---- FIX: Build full-basin DataFrame once ----
         df = pd.DataFrame(
             {
                 "Wind": wind_basin[idx],
@@ -346,24 +347,92 @@ def wind_pressure_relationship(idx_basin, months):
                 "Month": month_basin[idx],
             }
         )
+
+        # ---- FIX: Fit basin-wide WPR first as fallback ----
+        basin_coef = []
+        if len(df) > 10:
+            step = 2.0
+            to_bin = lambda x: np.floor(x / step) * step
+            df_all = df.copy()
+            df_all["windbin"] = df_all["Wind"].map(to_bin)
+            minpres_all = df_all.groupby("windbin")["Pressure"].mean()
+            maxwind_all = np.array(minpres_all.index)
+            minpres_all = minpres_all.values
+            # Remove NaN/inf
+            valid = (
+                np.isfinite(minpres_all) & np.isfinite(maxwind_all) & (minpres_all > 0)
+            )
+            if valid.sum() >= 3:
+                try:
+                    opt, _ = curve_fit(
+                        Vmax_function,
+                        minpres_all[valid],
+                        maxwind_all[valid],
+                        p0=[0.7, 0.6],
+                        bounds=([0.001, 0.01], [50.0, 3.0]),
+                        maxfev=10000,
+                    )
+                    basin_coef = [opt[0], opt[1]]
+                except (RuntimeError, TypeError):
+                    pass
+
         for i in range(len(months[idx])):
             m = months[idx][i]
-            df1 = df[(df["Month"] == m)]
-            step = 2.0  # Group in 2 m/s bins to eliminate the effect of more weaker storms (that might skew the fit)
+            df1 = df[df["Month"] == m].copy()  # ---- FIX: explicit .copy() ----
+
+            if len(df1) < 5:
+                if basin_coef:
+                    coeff_list[idx][m] = basin_coef
+                    print(
+                        f"  Month {m}: too few points ({len(df1)}), using basin-wide fit"
+                    )
+                else:
+                    print(f"  Month {m}: too few points and no basin fallback")
+                continue
+
+            step = 2.0  # Group in 2 m/s bins
             to_bin = lambda x: np.floor(x / step) * step
-            df1["windbin"] = df1.Wind.map(to_bin)
-            minpres = df1.groupby(["windbin"]).agg({"Pressure": "mean"})["Pressure"]
-            maxwind = np.unique(df1["windbin"])
+            df1["windbin"] = df1["Wind"].map(to_bin)
+            minpres = df1.groupby("windbin")["Pressure"].mean()
+            maxwind = np.array(minpres.index)
+            minpres = minpres.values
+
+            # ---- FIX: clean data before fitting ----
+            valid = np.isfinite(minpres) & np.isfinite(maxwind) & (minpres > 0)
+            if valid.sum() < 3:
+                if basin_coef:
+                    coeff_list[idx][m] = basin_coef
+                    print(f"  Month {m}: insufficient valid bins, using basin-wide fit")
+                continue
 
             try:
-                opt, l = curve_fit(Vmax_function, minpres, maxwind, maxfev=5000)
+                # ---- FIX: add p0 and bounds for robust convergence ----
+                opt, _ = curve_fit(
+                    Vmax_function,
+                    minpres[valid],
+                    maxwind[valid],
+                    p0=[0.7, 0.6],
+                    bounds=([0.001, 0.01], [50.0, 3.0]),
+                    maxfev=10000,
+                )
                 [a, b] = opt
                 coeff_list[idx][m] = [a, b]
 
             except RuntimeError:
                 print("Optimal parameters not found")
+                if basin_coef:
+                    coeff_list[idx][m] = basin_coef
+                    print(f"  Month {m}: using basin-wide fallback")
             except TypeError:
                 print("Too few items")
+                if basin_coef:
+                    coeff_list[idx][m] = basin_coef
+
+        # ---- FIX: final safety — fill any remaining empty months ----
+        for m in months[idx]:
+            if not coeff_list[idx][m] and basin_coef:
+                coeff_list[idx][m] = basin_coef
+                print(f"  Month {m}: filled with basin-wide fallback (final pass)")
 
     np.save(os.path.join(__location__, "COEFFICIENTS_WPR_PER_MONTH.npy"), coeff_list)
 
