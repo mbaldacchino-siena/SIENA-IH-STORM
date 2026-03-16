@@ -25,17 +25,20 @@ def get_IBStrack(url,local_path,file_name):
     # Specify the local file path where you want to save the downloaded file
     local_file_path = local_path+file_name
     
-    # Send an HTTP GET request to the URL
-    response = requests.get(url+file_name)
-    
-    # Check if the request was successful (status code 200)
-    if response.status_code == 200:
-        # Open the local file in binary write mode and write the content of the response to it
-        with open(local_file_path, 'wb') as file:
-            file.write(response.content)
-        print(f"File '{url}' downloaded successfully.")
+    if not Path(local_file_path).is_file():
+        # Send an HTTP GET request to the URL
+        response = requests.get(url+file_name)
+        
+        # Check if the request was successful (status code 200)
+        if response.status_code == 200:
+            # Open the local file in binary write mode and write the content of the response to it
+            with open(local_file_path, 'wb') as file:
+                file.write(response.content)
+            print(f"File '{url}' downloaded successfully.")
+        else:
+            print(f"Failed to download file. Status code: {response.status_code}")
     else:
-        print(f"Failed to download file. Status code: {response.status_code}")
+        print("Already downloaded")
         
 #==============================================================================
 # Function to get climate index 
@@ -149,8 +152,9 @@ def climatology_data(year):
     download_wind_shear_data(local_path, year_list)
 
     # download data from IBTrACS
-    file_name='/IBTrACS.ALL.v04r00.nc'
-    get_IBStrack('https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r00/access/netcdf/',local_path,file_name)
+    file_name='/IBTrACS.ALL.v04r01.nc'
+
+    get_IBStrack('https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/netcdf/',local_path,file_name)
 
     # open file of IBStrack
     cyclones=xr.open_dataset(local_path+file_name)
