@@ -26,47 +26,90 @@ def Check_if_landfall(lat,lon,basin,land_mask):
     return land_mask[y,x]
 
 
-def Startingpoint(no_storms,monthlist,basin,phase=None):
+def _build_weighted_index(grid_copy):
+    """
+    Build the weighted sampling list from a genesis grid.
+    Returns an empty list if the grid has no valid positive entries.
+    """
+    grid_copy = np.array(grid_copy)
+    grid_copy = np.round(grid_copy, 1)
+    ncols = len(grid_copy[0, :])
+    weighted_list_index = []
+    for i in range(len(grid_copy[:, 0])):
+        for j in range(ncols):
+            cell = grid_copy[i, j]
+            # ---- FIX: guard against NaN and negative values ----
+            if not np.isfinite(cell) or cell <= 0:
+                continue
+            value = int(10 * cell)
+            if value > 0:
+                weighted_list_index.extend([i * (ncols - 1) + j] * value)
+    return weighted_list_index, grid_copy
+
+
+def Startingpoint(no_storms, monthlist, basin, phase=None):
     phase = normalize_phase(phase)
-    basins=['EP','NA','NI','SI','SP','WP']
-    basin_name = dict(zip(basins,[0,1,2,3,4,5]))
-    idx=basin_name[basin]
-    lon_coordinates=[]
-    lat_coordinates=[]
-    s,monthdummy,lat0,lat1,lon0,lon1=Basins_WMO(basin, phase=phase)
-    land_mask=np.loadtxt(os.path.join(dir_path,'Land_ocean_mask_'+str(basin)+'.txt'))
+    basins = ["EP", "NA", "NI", "SI", "SP", "WP"]
+    basin_name = dict(zip(basins, [0, 1, 2, 3, 4, 5]))
+    idx = basin_name[basin]
+    lon_coordinates = []
+    lat_coordinates = []
+    s, monthdummy, lat0, lat1, lon0, lon1 = Basins_WMO(basin, phase=phase)
+    land_mask = np.loadtxt(
+        os.path.join(dir_path, "Land_ocean_mask_" + str(basin) + ".txt")
+    )
 
     for month in monthlist:
-        if phase is not None and os.path.exists(os.path.join(dir_path, f'GRID_GENESIS_MATRIX_{idx}_{month}_{phase}.txt')):
-            grid_path = os.path.join(dir_path, f'GRID_GENESIS_MATRIX_{idx}_{month}_{phase}.txt')
-        else:
-            grid_path = os.path.join(dir_path, f'GRID_GENESIS_MATRIX_{idx}_{month}.txt')
-        grid_copy=np.loadtxt(grid_path)
-        grid_copy=np.array(grid_copy)
-        grid_copy=np.round(grid_copy,1)
-        weighted_list_index=[]
-        for i in range(0,len(grid_copy[:,0])):
-            for j in range(0,len(grid_copy[0,:])):
-                value=max(int(10*grid_copy[i,j]), 0)
-                if value>0:
-                    weighted_list_index.extend([i*(len(grid_copy[0,:])-1)+j]*value)
-        var=0
-        while var==0:
-            idx0=random.choice(weighted_list_index)
-            row=int(np.floor(idx0/(len(grid_copy[0,:])-1)))
-            col=int(idx0%(len(grid_copy[0,:])-1))
-            lat_pert=random.uniform(0,0.94)
-            lon_pert=random.uniform(0,0.94)
-            lon=lon0+round(col+lon_pert,1)
-            lat=lat1-round(row+lat_pert,1)
-            if lon<lon1 and lat<lat1:
-                check=Check_if_landfall(lat,lon,basin,land_mask)
-                if basin=='EP':
-                    check = check or Check_EP_formation(lat,lon)
-                if basin=='NA':
-                    check = check or Check_NA_formation(lat,lon)
-                if check==0:
-                    var=1
-                    lon_coordinates.append(lon)
-                    lat_coordinates.append(lat)
-    return lon_coordinates,lat_coordinates
+        # ---- FIX: Try phase-specific grid first, fall back to pooled ----
+        grid_path_phase = None
+        grid_path_pooled = os.path.join(
+            dir_path, f"GRID_GENESIS_MATRIX_{idx}_{month}.txt"
+        )
+
+        if phase is not None:
+            candidate = os.path.join(
+                dir_path, f"GRID_GENESIS_MATRIX_{idx}_{month}_{phase}.txt"
+            )
+            if os.path.exists(candidate):
+                grid_path_phase = candidate
+
+        # Try phase grid first
+        weighted_list_index = []
+        grid_copy = None
+        if grid_path_phase is not None:
+            raw = np.loadtxt(grid_path_phase)
+            weighted_list_index, grid_copy = _build_weighted_index(raw)
+
+        # Fallback to pooled if phase grid is empty or missing
+        if len(weighted_list_index) == 0:
+            raw = np.loadtxt(grid_path_pooled)
+            weighted_list_index, grid_copy = _build_weighted_index(raw)
+
+        # If still empty (shouldn't happen for pooled, but be safe)
+        if len(weighted_list_index) == 0:
+            continue
+
+        ncols = len(grid_copy[0, :])
+        var = 0
+        attempts = 0
+        max_attempts = 10000
+        while var == 0 and attempts < max_attempts:
+            attempts += 1
+            idx0 = random.choice(weighted_list_index)
+            row = int(np.floor(idx0 / (ncols - 1)))
+            col = int(idx0 % (ncols - 1))
+            lat_pert = random.uniform(0, 0.94)
+            lon_pert = random.uniform(0, 0.94)
+            lon_pt = lon0 + round(col + lon_pert, 1)
+            lat_pt = lat1 - round(row + lat_pert, 1)
+            if lon_pt < lon1 and lat_pt < lat1:
+                check = Check_if_landfall(lat_pt, lon_pt, basin, land_mask)
+                if basin == "EP":
+                    check = check or Check_EP_formation(lat_pt, lon_pt)
+                if basin == "NA":
+                    check = check or Check_NA_formation(lat_pt, lon_pt)
+                if check == 0:
+                    var = 1
+                    lon_coordinates.append(lon_pt)
+                    lat_coordinates.append(lat_pt)
+    return lon_coordinates, lat_coordinates
