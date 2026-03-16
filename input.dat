@@ -1,4 +1,4 @@
-period=[2005,2025]
+period=[1980,2020]
 idx_basin=[0,1,2,3,4,5]
 threshold=0.5
 climate_index='ONI'
