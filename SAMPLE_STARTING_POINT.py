@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """STORM genesis-location sampler with optional ENSO-phase-specific grids."""
+
 import numpy as np
 import random
 import os
@@ -7,23 +8,25 @@ import sys
 from SELECT_BASIN import Basins_WMO
 from siena_utils import normalize_phase
 
-dir_path=os.path.dirname(os.path.realpath(sys.argv[0]))
+dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
 
-def Check_EP_formation(lat,lon):
-    return not (lon>276 and lat>20)
+def Check_EP_formation(lat, lon):
+    # Block EP genesis in the NA-exclusive zone (lon>276 AND lat>20)
+    return lon > 276 and lat > 20
 
 
-def Check_NA_formation(lat,lon):
-    return not (lon<276 and lat<20)
+def Check_NA_formation(lat, lon):
+    # Block NA genesis in the EP-exclusive zone (lon<276 AND lat<20)
+    return lon < 276 and lat < 20
 
 
-def Check_if_landfall(lat,lon,basin,land_mask):
-    s,monthdummy,lat0_WMO,lat1_WMO,lon0_WMO,lon1_WMO=Basins_WMO(basin)
-    x=int(10*(lon-lon0_WMO))
-    y=int(10*(lat1_WMO-lat))
-    return land_mask[y,x]
+def Check_if_landfall(lat, lon, basin, land_mask):
+    s, monthdummy, lat0_WMO, lat1_WMO, lon0_WMO, lon1_WMO = Basins_WMO(basin)
+    x = int(10 * (lon - lon0_WMO))
+    y = int(10 * (lat1_WMO - lat))
+    return land_mask[y, x]
 
 
 def _build_weighted_index(grid_copy):
