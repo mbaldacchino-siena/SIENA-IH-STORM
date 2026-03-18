@@ -319,7 +319,6 @@ def extract_data(data, final_year):
     np.save(os.path.join(dir_path, "BASINLIST_INTERP.npy"), basinlist)
     np.save(os.path.join(dir_path, "YEARLIST_INTERP.npy"), yearlist)
 
-
 def TC_variables(
     nyear,
     monthsall,
@@ -333,7 +332,30 @@ def TC_variables(
     Extract the important variables.
     SIENA extension: keep all storms pooled, add ENSO phase/year and co-located
     VWS/RH for track and pressure variables.
+
+    vws_fields / rh_fields can be keyed either as:
+      - {month: array}                   (legacy, pooled)
+      - {(month, phase_str): array}      (phase-aware, e.g. (6, 'EN'))
+    The lookup tries (month, phase_name) first, then (month, None), then month.
     """
+
+    def _lookup_env(fields, month, phase_name):
+        """Pick the best available field: phase-specific > pooled."""
+        if fields is None:
+            return None
+        # Try phase-specific key first
+        key = (month, phase_name)
+        if key in fields:
+            return fields[key]
+        # Try pooled with tuple key
+        key = (month, None)
+        if key in fields:
+            return fields[key]
+        # Try legacy int key
+        if month in fields:
+            return fields[month]
+        return None
+
     try:
         latlist = np.load(
             os.path.join(__location__, "LATLIST_INTERP.npy"), allow_pickle=True
@@ -432,13 +454,15 @@ def TC_variables(
                     lon_now = lonlist[i][j]
                     vws_val = np.nan
                     rh_val = np.nan
-                    if vws_fields is not None and month in vws_fields:
+                    vws_fld = _lookup_env(vws_fields, month, phase_name)
+                    if vws_fld is not None:
                         vws_val = nearest_env_value(
-                            vws_fields[month], latitudes, longitudes, lat_now, lon_now
+                            vws_fld, latitudes, longitudes, lat_now, lon_now
                         )
-                    if rh_fields is not None and month in rh_fields:
+                    rh_fld = _lookup_env(rh_fields, month, phase_name)
+                    if rh_fld is not None:
                         rh_val = nearest_env_value(
-                            rh_fields[month], latitudes, longitudes, lat_now, lon_now
+                            rh_fld, latitudes, longitudes, lat_now, lon_now
                         )
 
                     track[0][idx].append(latlist[i][j] - latlist[i][j - 1])
@@ -462,17 +486,19 @@ def TC_variables(
                         lon_now = lonlist[i][j]
                         vws_val = np.nan
                         rh_val = np.nan
-                        if vws_fields is not None and month in vws_fields:
+                        vws_fld = _lookup_env(vws_fields, month, phase_name)
+                        if vws_fld is not None:
                             vws_val = nearest_env_value(
-                                vws_fields[month],
+                                vws_fld,
                                 latitudes,
                                 longitudes,
                                 lat_now,
                                 lon_now,
                             )
-                        if rh_fields is not None and month in rh_fields:
+                        rh_fld = _lookup_env(rh_fields, month, phase_name)
+                        if rh_fld is not None:
                             rh_val = nearest_env_value(
-                                rh_fields[month],
+                                rh_fld,
                                 latitudes,
                                 longitudes,
                                 lat_now,
