@@ -19,7 +19,7 @@ Copyright (C) 2026 Mathys Baldacchino
 import os
 import numpy as np
 import warnings
-from climatology import compute_phase_climatology
+import climatology
 import xarray as xr 
 
 try:
@@ -167,14 +167,14 @@ def build_phase_specific_pi_climatologies(oni_df, era5_paths, out_dir):
         print("  No vertical profile data provided. Using simplified PI.")
 
     # SST and MSLP — no save (already saved by main pipeline)
-    sst_clim, sst_pooled = compute_phase_climatology(
+    sst_clim, sst_pooled = climatology.compute_phase_climatology(
         era5_paths["sst"],
         "sst",
         oni_df,
         "_tmp_sst",
         out_dir=None,
     )
-    mslp_clim, mslp_pooled = compute_phase_climatology(
+    mslp_clim, mslp_pooled = climatology.compute_phase_climatology(
         era5_paths["mslp"],
         "msl",
         oni_df,
@@ -195,14 +195,14 @@ def build_phase_specific_pi_climatologies(oni_df, era5_paths, out_dir):
         ds_peek.close()
 
         # pressure_level_idx=None → keeps all levels, returns (level, lat, lon) arrays
-        t_clim, t_pooled = compute_phase_climatology(
+        t_clim, t_pooled = climatology.compute_phase_climatology(
             era5_paths["t"],
             "t",
             oni_df,
             "_tmp_t",
             out_dir=None,
         )
-        q_clim, q_pooled = compute_phase_climatology(
+        q_clim, q_pooled = climatology.compute_phase_climatology(
             era5_paths["q"],
             "q",
             oni_df,
