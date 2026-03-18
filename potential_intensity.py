@@ -17,6 +17,8 @@ by incorporating MSLP and a basic CAPE-like correction.
 import os
 import numpy as np
 import warnings
+from climatology import compute_phase_climatology
+import xarray as xr 
 
 try:
     from tcpyPI import pi as calc_pi
@@ -147,152 +149,79 @@ def compute_pi_field_simplified(sst_K, mslp_Pa):
     return pmin, vmax
 
 
-def build_phase_climatology(ds, varname, oni_df, dim_time='valid_time'):
-    """
-    Build month × phase climatology from an xarray dataset.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-    varname : str, variable name in ds
-    oni_df : DataFrame with columns [year, month, phase]
-    dim_time : str, name of the time dimension
-
-    Returns
-    -------
-    clim : dict {month: {phase: numpy array}}
-    """
-    import pandas as pd
-
-    times = pd.to_datetime(ds[dim_time].values)
-    years = times.year
-    months_arr = times.month
-
-    # Build lookup from ONI table
-    phase_lookup = {}
-    for _, row in oni_df.iterrows():
-        phase_lookup[(int(row['year']), int(row['month']))] = str(row['phase']).strip().upper()
-
-    clim = {m: {ph: [] for ph in PHASES} for m in range(1, 13)}
-    clim_pooled = {m: [] for m in range(1, 13)}
-
-    for t_idx in range(len(times)):
-        yr = int(years[t_idx])
-        mo = int(months_arr[t_idx])
-        ph = phase_lookup.get((yr, mo), "NEU")
-        if ph not in PHASES:
-            ph = "NEU"
-
-        if hasattr(ds[varname], 'dims') and 'pressure_level' in ds[varname].dims:
-            field = ds[varname].isel({dim_time: t_idx}).values
-        elif hasattr(ds[varname], 'dims') and 'level' in ds[varname].dims:
-            field = ds[varname].isel({dim_time: t_idx}).values
-        else:
-            field = ds[varname].isel({dim_time: t_idx}).values
-
-        clim[mo][ph].append(field)
-        clim_pooled[mo].append(field)
-
-    # Average
-    result = {m: {} for m in range(1, 13)}
-    result_pooled = {}
-    for m in range(1, 13):
-        for ph in PHASES:
-            if len(clim[m][ph]) > 0:
-                result[m][ph] = np.nanmean(np.stack(clim[m][ph], axis=0), axis=0)
-            else:
-                # Fallback to pooled
-                result[m][ph] = None
-        if len(clim_pooled[m]) > 0:
-            result_pooled[m] = np.nanmean(np.stack(clim_pooled[m], axis=0), axis=0)
-        else:
-            result_pooled[m] = None
-
-    # Fill missing phases with pooled
-    for m in range(1, 13):
-        for ph in PHASES:
-            if result[m][ph] is None and result_pooled[m] is not None:
-                result[m][ph] = result_pooled[m]
-
-    return result, result_pooled
-
-
 def build_phase_specific_pi_climatologies(oni_df, era5_paths, out_dir):
     """
     Build phase-specific PI fields from ERA5 monthly data.
-
-    Parameters
-    ----------
-    oni_df : DataFrame with columns [year, month, phase]
-    era5_paths : dict with keys 'sst', 'mslp', and optionally 't', 'q'
-                 Values are file paths to ERA5 .nc files.
-    out_dir : str, output directory
-
-    Returns
-    -------
-    None (writes PI fields to disk)
     """
-    import xarray as xr
-
     print("Building phase-specific PI climatologies...")
-    has_profiles = 't' in era5_paths and 'q' in era5_paths
+    has_profiles = "t" in era5_paths and "q" in era5_paths
     use_full_pi = HAS_TCPYPI and has_profiles
 
     if use_full_pi:
         print("  Using full thermodynamic PI (tcpyPI + ERA5 profiles)")
     elif has_profiles:
         print("  tcpyPI not installed. Using simplified PI approximation.")
-        print("  Install tcpyPI for full thermodynamic PI: pip install tcpyPI")
     else:
         print("  No vertical profile data provided. Using simplified PI.")
 
-    # Build SST and MSLP phase climatologies
-    ds_sst = xr.open_dataset(era5_paths['sst'])
-    # Detect time dimension name
-    time_dim = 'valid_time' if 'valid_time' in ds_sst.dims else 'time'
-    sst_varname = 'sst' if 'sst' in ds_sst else list(ds_sst.data_vars)[0]
-    sst_clim, sst_pooled = build_phase_climatology(ds_sst, sst_varname, oni_df, dim_time=time_dim)
-    ds_sst.close()
+    # SST and MSLP — no save (already saved by main pipeline)
+    sst_clim, sst_pooled = compute_phase_climatology(
+        era5_paths["sst"],
+        "sst",
+        oni_df,
+        "_tmp_sst",
+        out_dir=None,
+    )
+    mslp_clim, mslp_pooled = compute_phase_climatology(
+        era5_paths["mslp"],
+        "msl",
+        oni_df,
+        "_tmp_mslp",
+        out_dir=None,
+        unit_scale=0.01,
+    )
 
-    ds_mslp = xr.open_dataset(era5_paths['mslp'])
-    time_dim_m = 'valid_time' if 'valid_time' in ds_mslp.dims else 'time'
-    mslp_varname = 'msl' if 'msl' in ds_mslp else list(ds_mslp.data_vars)[0]
-    mslp_clim, mslp_pooled = build_phase_climatology(ds_mslp, mslp_varname, oni_df, dim_time=time_dim_m)
-    ds_mslp.close()
-
+    # T and Q profiles — no save, no level selection (need full profile)
     t_clim = t_pooled = q_clim = q_pooled = p_lev_hPa = None
     if has_profiles:
-        ds_t = xr.open_dataset(era5_paths['t'])
-        time_dim_t = 'valid_time' if 'valid_time' in ds_t.dims else 'time'
-        t_varname = 't' if 't' in ds_t else list(ds_t.data_vars)[0]
-        t_clim, t_pooled = build_phase_climatology(ds_t, t_varname, oni_df, dim_time=time_dim_t)
-        # Get pressure levels
-        if 'pressure_level' in ds_t.dims:
-            p_lev_hPa = ds_t.pressure_level.values.astype(float)
-        elif 'level' in ds_t.dims:
-            p_lev_hPa = ds_t.level.values.astype(float)
-        ds_t.close()
+        # Extract pressure levels before compute_phase_climatology closes the file
+        ds_peek = xr.open_dataset(era5_paths["t"])
+        if "pressure_level" in ds_peek.dims:
+            p_lev_hPa = ds_peek.pressure_level.values.astype(float)
+        elif "level" in ds_peek.dims:
+            p_lev_hPa = ds_peek.level.values.astype(float)
+        ds_peek.close()
 
-        ds_q = xr.open_dataset(era5_paths['q'])
-        time_dim_q = 'valid_time' if 'valid_time' in ds_q.dims else 'time'
-        q_varname = 'q' if 'q' in ds_q else 'r' if 'r' in ds_q else list(ds_q.data_vars)[0]
-        q_clim, q_pooled = build_phase_climatology(ds_q, q_varname, oni_df, dim_time=time_dim_q)
-        ds_q.close()
+        # pressure_level_idx=None → keeps all levels, returns (level, lat, lon) arrays
+        t_clim, t_pooled = compute_phase_climatology(
+            era5_paths["t"],
+            "t",
+            oni_df,
+            "_tmp_t",
+            out_dir=None,
+        )
+        q_clim, q_pooled = compute_phase_climatology(
+            era5_paths["q"],
+            "q",
+            oni_df,
+            "_tmp_q",
+            out_dir=None,
+        )
 
     # Compute PI for each month × phase
     for month in range(1, 13):
         for phase in PHASES:
             print(f"  Computing PI: month={month}, phase={phase}")
-            sst = sst_clim[month][phase]
-            mslp = mslp_clim[month][phase]
+            sst = sst_clim[month].get(phase)
+            mslp = mslp_clim[month].get(phase)
 
             if sst is None or mslp is None:
                 print(f"    Skipping: no data for month={month}, phase={phase}")
                 continue
 
-            if use_full_pi and t_clim is not None and q_clim is not None:
-                t = t_clim[month][phase]
-                q = q_clim[month][phase]
+            if use_full_pi and t_clim is not None:
+                t = t_clim[month].get(phase)
+                q = q_clim[month].get(phase)
                 if t is not None and q is not None:
                     pmin, vmax = compute_pi_field_tcpyPI(sst, mslp, t, q, p_lev_hPa)
                 else:
@@ -301,92 +230,30 @@ def build_phase_specific_pi_climatologies(oni_df, era5_paths, out_dir):
                 pmin, vmax = compute_pi_field_simplified(sst, mslp)
 
             np.savetxt(
-                os.path.join(out_dir, f"Monthly_mean_PI_{month}_{phase}.txt"),
-                pmin,
+                os.path.join(out_dir, f"Monthly_mean_PI_{month}_{phase}.txt"), pmin
             )
             np.savetxt(
-                os.path.join(out_dir, f"Monthly_mean_VMAX_PI_{month}_{phase}.txt"),
-                vmax,
+                os.path.join(out_dir, f"Monthly_mean_VMAX_PI_{month}_{phase}.txt"), vmax
             )
 
-        # Also save pooled
+        # Pooled
         print(f"  Computing PI: month={month}, pooled")
-        sst_p = sst_pooled[month]
-        mslp_p = mslp_pooled[month]
+        sst_p = sst_pooled.get(month)
+        mslp_p = mslp_pooled.get(month)
         if sst_p is not None and mslp_p is not None:
-            if use_full_pi and t_pooled is not None and q_pooled is not None:
-                t_p = t_pooled[month]
-                q_p = q_pooled[month]
+            if use_full_pi and t_pooled is not None:
+                t_p = t_pooled.get(month)
+                q_p = q_pooled.get(month)
                 if t_p is not None and q_p is not None:
-                    pmin_p, vmax_p = compute_pi_field_tcpyPI(sst_p, mslp_p, t_p, q_p, p_lev_hPa)
+                    pmin_p, vmax_p = compute_pi_field_tcpyPI(
+                        sst_p, mslp_p, t_p, q_p, p_lev_hPa
+                    )
                 else:
                     pmin_p, vmax_p = compute_pi_field_simplified(sst_p, mslp_p)
             else:
                 pmin_p, vmax_p = compute_pi_field_simplified(sst_p, mslp_p)
 
-            np.savetxt(
-                os.path.join(out_dir, f"Monthly_mean_PI_{month}.txt"),
-                pmin_p,
-            )
+            np.savetxt(os.path.join(out_dir, f"Monthly_mean_PI_{month}.txt"), pmin_p)
 
     print("PI climatologies complete.")
 
-
-def build_phase_specific_env_climatologies(oni_df, nc_path, varname, out_stem, out_dir,
-                                            pressure_level_idx=None):
-    """
-    Build phase-specific monthly climatologies for any ERA5 variable (VWS, RH, etc).
-
-    Parameters
-    ----------
-    oni_df : DataFrame with [year, month, phase]
-    nc_path : str, path to ERA5 .nc file
-    varname : str, variable name in the dataset
-    out_stem : str, output file stem (e.g., 'Monthly_mean_VWS')
-    out_dir : str, output directory
-    pressure_level_idx : int or None, if the data has a pressure_level dim, select this index
-    """
-    import xarray as xr
-
-    print(f"Building phase-specific {out_stem} climatologies...")
-    ds = xr.open_dataset(nc_path)
-    time_dim = 'valid_time' if 'valid_time' in ds.dims else 'time'
-
-    # If pressure level selection needed
-    if pressure_level_idx is not None:
-        if 'pressure_level' in ds.dims:
-            ds = ds.isel(pressure_level=pressure_level_idx)
-        elif 'level' in ds.dims:
-            ds = ds.isel(level=pressure_level_idx)
-
-    # Detect variable name
-    if varname not in ds:
-        # Try to find it
-        candidates = list(ds.data_vars)
-        if len(candidates) == 1:
-            varname = candidates[0]
-        else:
-            print(f"  WARNING: variable '{varname}' not found in {nc_path}. Available: {candidates}")
-            ds.close()
-            return
-
-    clim, clim_pooled = build_phase_climatology(ds, varname, oni_df, dim_time=time_dim)
-    ds.close()
-
-    for month in range(1, 13):
-        # Save pooled
-        if clim_pooled[month] is not None:
-            np.savetxt(
-                os.path.join(out_dir, f"{out_stem}_{month}.txt"),
-                clim_pooled[month],
-            )
-        # Save phase-specific
-        for phase in PHASES:
-            if clim[month][phase] is not None:
-                np.savetxt(
-                    os.path.join(out_dir, f"{out_stem}_{month}_{phase}.txt"),
-                    clim[month][phase],
-                )
-                print(f"  Saved {out_stem}_{month}_{phase}.txt")
-
-    print(f"{out_stem} climatologies complete.")
