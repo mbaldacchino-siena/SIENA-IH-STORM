@@ -765,8 +765,17 @@ def _fit_pressure_model_siena(dp0, presmpi, vws, rh, i_en, i_ln, dp1, lambda_pha
         i_ln=i_ln,
     )
     resid = dp1 - pred
-    mu, std = norm.fit(resid)
-    return theta, pred, resid, mu, std
+    mu = float(np.mean(resid))
+    centered = resid - mu
+    neg = centered[centered < 0]
+    pos = centered[centered >= 0]
+    # Two-piece normal: separate sigma for intensification (neg dp) vs weakening (pos dp)
+    # This captures the heavy tail of rapid intensification events
+    # (Kaplan & DeMaria 2003, doi:10.1175/1520-0434(2003)018<1093:LNARP>2.0.CO;2)
+    std_neg = float(np.sqrt(np.mean(neg ** 2))) if len(neg) > 1 else float(np.std(resid))
+    std_pos = float(np.sqrt(np.mean(pos ** 2))) if len(pos) > 1 else float(np.std(resid))
+    return theta, pred, resid, mu, std_neg, std_pos
+
 
 
 def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
@@ -805,9 +814,24 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
             m = months[idx][i]
             m_coef = months_for_coef[idx][i]
             print(idx, m)
-            MPI_MATRIX = np.loadtxt(
-                os.path.join(__location__, "MPI_FIELDS_" + str(idx) + str(m) + ".txt")
-            )
+            # Fix 2: Prefer thermodynamic PI fields over empirical MPI
+            pi_path = os.path.join(__location__, f"Monthly_mean_PI_{m}.txt")
+            mpi_path = os.path.join(__location__, "MPI_FIELDS_" + str(idx) + str(m) + ".txt")
+            if os.path.exists(pi_path):
+                # PI fields are global (same grid as SST/MSLP)
+                PI_GLOBAL = np.loadtxt(pi_path)
+                lat_0_pi = np.abs(lat - lat1).argmin()
+                lat_1_pi = np.abs(lat - lat0).argmin()
+                lon_0_pi = np.abs(lon - lon0).argmin()
+                lon_1_pi = np.abs(lon - lon11).argmin()
+                MPI_MATRIX = PI_GLOBAL[lat_0_pi:lat_1_pi, lon_0_pi:lon_1_pi]
+                print(f"  Using thermodynamic PI field for month {m}")
+            elif os.path.exists(mpi_path):
+                MPI_MATRIX = np.loadtxt(mpi_path)
+                print(f"  Falling back to empirical MPI field for month {m}")
+            else:
+                print(f"  WARNING: No PI or MPI field found for idx={idx}, month={m}")
+                continue
 
             lat_df, lon_df, mpi_df = [], [], []
             for i0 in range(len(MPI_MATRIX[:, 0])):
@@ -888,7 +912,8 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
                 name: -100 * np.ones((int((lat1 - lat0) / 5), int((lon1 - lon0) / 5)))
                 for name in [
                     "mean",
-                    "std",
+                    "std_neg",
+                    "std_pos",
                     "c0",
                     "c1",
                     "c2",
@@ -936,7 +961,7 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
                             0.0, sub["Pressure"].values - sub["MPI"].values
                         )
                         try:
-                            theta, pred, resid, mu, std = _fit_pressure_model_siena(
+                            theta, pred, resid, mu, std_neg, std_pos = _fit_pressure_model_siena(
                                 sub["DP0"].values,
                                 presmpi,
                                 sub["VWS"].values,
@@ -949,7 +974,8 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
                             a, b, c, d, c_vws, c_rh, c_en, c_ln = theta
                             if abs(mu) < 2 and c > 0 and d >= 0:
                                 matrices["mean"][i_ind, j_ind] = mu
-                                matrices["std"][i_ind, j_ind] = std
+                                matrices["std_neg"][i_ind, j_ind] = std_neg
+                                matrices["std_pos"][i_ind, j_ind] = std_pos
                                 matrices["c0"][i_ind, j_ind] = a
                                 matrices["c1"][i_ind, j_ind] = b
                                 matrices["c2"][i_ind, j_ind] = c
@@ -987,7 +1013,8 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
 
             for name in [
                 "mean",
-                "std",
+                "std_neg",
+                "std_pos",
                 "c0",
                 "c1",
                 "c2",
@@ -1060,7 +1087,8 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
                             matrices["c2"][i0, j0],
                             matrices["c3"][i0, j0],
                             matrices["mean"][i0, j0],
-                            matrices["std"][i0, j0],
+                            matrices["std_neg"][i0, j0],
+                            matrices["std_pos"][i0, j0],
                             matrix_mpi[i0, j0],
                             matrices["cvws"][i0, j0],
                             matrices["crh"][i0, j0],
