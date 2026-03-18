@@ -358,8 +358,8 @@ def _save_phase_table(climate_df, local_path):
 
 
 def compute_phase_climatology(
-    nc_path, varname, oni_df, out_stem, out_dir, pressure_level_idx=None, unit_scale=1.0
-):
+    nc_path : str, varname : str | None, oni_df : pd.DataFrame, out_stem : str, out_dir : str | None, pressure_level_idx : int | None =None, unit_scale : float =1.0,
+) -> tuple[dict,dict]:
     """
     Unified phase-specific climatology builder.
 
@@ -369,7 +369,7 @@ def compute_phase_climatology(
     varname : str or None. If None, auto-detect first data variable.
     oni_df : DataFrame with [year, month, phase]
     out_stem : str, output file prefix (e.g. 'Monthly_mean_SST')
-    out_dir : str, output directory
+    out_dir : str | None, output directory, if set to None, no save
     pressure_level_idx : int or None, select a single pressure level if needed
     unit_scale : float, multiply output by this (e.g. 0.01 for Pa→hPa)
 
@@ -416,14 +416,15 @@ def compute_phase_climatology(
     ds.close()
 
     # Average and save
-    clim = {m: {} for m in range(1, 13)}
-    pooled = {}
+    clim : dict = {m: {} for m in range(1, 13)}
+    pooled : dict = {}
 
     for m in range(1, 13):
         # Pooled
         if accum_pooled[m]:
             p = np.nanmean(np.stack(accum_pooled[m]), axis=0) * unit_scale
-            np.savetxt(os.path.join(out_dir, f"{out_stem}_{m}.txt"), p)
+            if out_dir is not None:
+                np.savetxt(os.path.join(out_dir, f"{out_stem}_{m}.txt"), p)
             pooled[m] = p
         # Phase-specific
         for ph in PHASES:
@@ -433,7 +434,8 @@ def compute_phase_climatology(
                 f = pooled[m]  # fallback to pooled
             else:
                 continue
-            np.savetxt(os.path.join(out_dir, f"{out_stem}_{m}_{ph}.txt"), f)
+            if out_dir is not None:
+                np.savetxt(os.path.join(out_dir, f"{out_stem}_{m}_{ph}.txt"), f)
             clim[m][ph] = f
 
     return clim, pooled
