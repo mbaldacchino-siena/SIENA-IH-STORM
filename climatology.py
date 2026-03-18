@@ -1,12 +1,12 @@
-# -*- coding: utf-8 -*-
 """
-@author: Itxaso Oderiz, itxaso.oderiz@unican.es
+@author: Mathys Baldacchino, mathys.baldacchino@sienacapitalgroup.com
 
-Climatalogy's cyclone to execute STORM
-This programs select STORM data (cyclones, SST, SLP) for different climatology periods
+Climatalogy's cyclone to execute SIENA-IH-STORM
+This programs select SIENA-IH-STORM data (cyclones, SST, SLP, VWS, RH) for different climatology periods
+It also downloads necessary profile data for Potential Indexing.
+It is strongly inspired by I. Oderiz (C) 2025 [Itxaso Oderiz, itxaso.oderiz@unican.es]
 
-
-Copyright (C) 2023 Itxaso Odériz
+Copyright (C) 2026 Mathys Baldacchino
 """
 
 import xarray as xr
