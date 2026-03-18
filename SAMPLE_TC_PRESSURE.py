@@ -16,6 +16,7 @@ import numpy as np
 from SELECT_BASIN import Basins_WMO
 from math import radians, cos, sin, asin, sqrt
 from SAMPLE_RMAX import Add_Rmax
+from scipy.stats import truncnorm
 import math
 import sys
 import os
@@ -23,6 +24,56 @@ dir_path=os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 import random
 from siena_utils import normalize_phase, phase_code, load_monthly_field
+
+
+def _sample_twopn(mu, std_neg, std_pos):
+    """
+    Sample from a two-piece normal distribution.
+
+    The two-piece normal uses std_neg for the left half (intensification)
+    and std_pos for the right half (weakening), capturing the asymmetry
+    observed in TC pressure change residuals.
+    (Kaplan & DeMaria 2003, doi:10.1175/1520-0434(2003)018<1093:LNARP>2.0.CO;2)
+    """
+    # Two-piece normal: sample from the appropriate half-normal
+    u = np.random.random()
+    # Probability of drawing from the left half
+    p_left = std_neg / (std_neg + std_pos)
+    if u < p_left:
+        # Left half (intensification side, dp < mu)
+        return mu - abs(np.random.normal(0, std_neg))
+    else:
+        # Right half (weakening side, dp > mu)
+        return mu + abs(np.random.normal(0, std_pos))
+
+
+def _sample_truncated_twopn(mu, std_neg, std_pos, lower, upper):
+    """
+    Sample from a truncated two-piece normal distribution.
+
+    Replaces the while-loop clipping that distorted the tails.
+    Uses scipy.stats.truncnorm for proper truncated sampling.
+    """
+    # Choose which half to sample from
+    u = np.random.random()
+    p_left = std_neg / (std_neg + std_pos)
+
+    if u < p_left:
+        # Left half - use std_neg
+        sigma = std_neg
+        # Truncated normal on [lower, mu] reflected to standard form
+        a_tn = (lower - mu) / sigma
+        b_tn = 0.0  # upper bound at mu
+        draw = truncnorm.rvs(a_tn, b_tn, loc=mu, scale=sigma)
+    else:
+        # Right half - use std_pos
+        sigma = std_pos
+        a_tn = 0.0  # lower bound at mu
+        b_tn = (upper - mu) / sigma
+        draw = truncnorm.rvs(a_tn, b_tn, loc=mu, scale=sigma)
+
+    return float(np.clip(draw, lower, upper))
+
 
 def Calculate_Vmax(Penv,Pc,coef):
     """
@@ -375,6 +426,12 @@ def TC_pressure(basin,latlist,lonlist,landfalllist,year,storms,monthlist,TC_data
         
         #This is the full MSLP field, with lat0=90 deg, lat1=-90 deg, lon0=0 deg, lon1=359.75 deg. len(lat)=721, len(lon)=1440
         Penv_field=load_monthly_field(dir_path, 'Monthly_mean_MSLP', month, phase=phase)
+        # Fix 2: Load PI field for thermodynamic intensity ceiling
+        PI_field = None
+        try:
+            PI_field = load_monthly_field(dir_path, 'Monthly_mean_PI', month, phase=phase)
+        except Exception:
+            pass
         VWS_field = None
         RH_field = None
         try:
@@ -392,7 +449,10 @@ def TC_pressure(basin,latlist,lonlist,landfalllist,year,storms,monthlist,TC_data
         coef=WPR_coefficients[idx][month]
         coef=np.array(coef)
         
-        p_threshold=min(constants_pressure[:,6])-10.
+        # Coefficient format: [c0,c1,c2,c3,mu,std_neg,std_pos,mpi,c_vws,c_rh,c_en,c_ln]
+        # MPI/PI is at index 7 in new format, index 6 in legacy format
+        mpi_col = 7 if constants_pressure.shape[1] >= 12 else 6
+        p_threshold=min(constants_pressure[:,mpi_col])-10.
         
         EP=Genpres[idx][month]
         
@@ -449,27 +509,30 @@ def TC_pressure(basin,latlist,lonlist,landfalllist,year,storms,monthlist,TC_data
                       ind=int(find_index_pressure(basin,lat,lon,lat0,lon0,lon1)) #find index for pressure
                       
                       row = constants_pressure[ind]
-                      c0,c1,c2,c3,EPmu,EPstd,mpi = row[:7]
-                      c_vws,c_rh,c_en,c_ln = (row[7:11] if len(row) >= 11 else [0.0,0.0,0.0,0.0])
+                      # Fix 3: new coefficient format with std_neg and std_pos (12 values)
+                      if len(row) >= 12:
+                          c0,c1,c2,c3,EPmu,EPstd_neg,EPstd_pos,mpi = row[:8]
+                          c_vws,c_rh,c_en,c_ln = row[8:12]
+                      elif len(row) >= 11:
+                          c0,c1,c2,c3,EPmu,EPstd,mpi = row[:7]
+                          EPstd_neg = EPstd_pos = EPstd
+                          c_vws,c_rh,c_en,c_ln = row[7:11]
+                      else:
+                          c0,c1,c2,c3,EPmu,EPstd,mpi = row[:7]
+                          EPstd_neg = EPstd_pos = EPstd
+                          c_vws,c_rh,c_en,c_ln = 0.0, 0.0, 0.0, 0.0
+                      # Fix 2: Override MPI with PI from field if available
+                      if PI_field is not None:
+                          pi_val = float(PI_field[lat_dummy, lon_dummy])
+                          if np.isfinite(pi_val) and pi_val > 0:
+                              mpi = pi_val
                       vws = float(VWS_field[lat_dummy, lon_dummy]) if VWS_field is not None else 0.0
                       rh = float(RH_field[lat_dummy, lon_dummy]) if RH_field is not None else 0.0
                       y=PRESSURE_JAMES_MASON(dp1,p,c0,c1,c2,c3,mpi,vws=vws,rh=rh,phase=ph_code,c_vws=c_vws,c_rh=c_rh,c_en=c_en,c_ln=c_ln) 
-                      epsilon=np.random.normal(EPmu,EPstd)
-                      dp0=float(y+epsilon)
-                      
-                      while dp0<dpmin: #if more intensification than seen in the underlying dataset
-                          if y-dpmin>EPmu-2.*EPstd: #epsilon should be resampled
-                              epsilon=np.random.normal(EPmu,EPstd)
-                              dp0=y+epsilon
-                          else: #y is already smaller than dpmin. 
-                              dp0=np.random.uniform(dpmin,0)
-                      
-                      while dp0>dpmax: #if more weakening than seen in the underlying dataset
-                          if y-dpmax<EPmu+2.*EPstd:
-                              epsilon=np.random.normal(EPmu,EPstd)
-                              dp0=y+epsilon
-                          else:
-                              dp0=np.random.uniform(0,dpmax)      
+                      # Fix 3+4: Two-piece normal with truncated sampling
+                      dp0 = _sample_truncated_twopn(
+                          y + EPmu, EPstd_neg, EPstd_pos, dpmin, dpmax
+                      )
                       
                       if p<mpi:#if pressure has dropped below mpi
                           if dp0<0: #if intensification
@@ -547,30 +610,31 @@ def TC_pressure(basin,latlist,lonlist,landfalllist,year,storms,monthlist,TC_data
                         ind=int(find_index_pressure(basin,lat,lon,lat0,lon0,lon1)) #find index for pressure
                         
                         row = constants_pressure[ind]
-                        c0,c1,c2,c3,EPmu,EPstd,mpi = row[:7]
-                        c_vws,c_rh,c_en,c_ln = (row[7:11] if len(row) >= 11 else [0.0,0.0,0.0,0.0])
+                        # Fix 3: new coefficient format with std_neg and std_pos (12 values)
+                        if len(row) >= 12:
+                            c0,c1,c2,c3,EPmu,EPstd_neg,EPstd_pos,mpi = row[:8]
+                            c_vws,c_rh,c_en,c_ln = row[8:12]
+                        elif len(row) >= 11:
+                            c0,c1,c2,c3,EPmu,EPstd,mpi = row[:7]
+                            EPstd_neg = EPstd_pos = EPstd  # backward compat
+                            c_vws,c_rh,c_en,c_ln = row[7:11]
+                        else:
+                            c0,c1,c2,c3,EPmu,EPstd,mpi = row[:7]
+                            EPstd_neg = EPstd_pos = EPstd
+                            c_vws,c_rh,c_en,c_ln = 0.0, 0.0, 0.0, 0.0
+                        # Fix 2: Override MPI with PI from field if available
+                        if PI_field is not None:
+                            pi_val = float(PI_field[lat_dummy, lon_dummy])
+                            if np.isfinite(pi_val) and pi_val > 0:
+                                mpi = pi_val
                         vws = float(VWS_field[lat_dummy, lon_dummy]) if VWS_field is not None else 0.0
                         rh = float(RH_field[lat_dummy, lon_dummy]) if RH_field is not None else 0.0
                         y=PRESSURE_JAMES_MASON(dp1,p,c0,c1,c2,c3,mpi,vws=vws,rh=rh,phase=ph_code,c_vws=c_vws,c_rh=c_rh,c_en=c_en,c_ln=c_ln) 
                         
-                        epsilon=np.random.normal(EPmu,EPstd)
-
-                        dp0=float(y+epsilon)  
-
-                        
-                        while dp0<dpmin: #if more intensification than seen in the underlying dataset
-                            if y-dpmin>EPmu-2.*EPstd: #epsilon should be resampled
-                                epsilon=np.random.normal(EPmu,EPstd)
-                                dp0=y+epsilon
-                            else: #y is already smaller than dpmin. 
-                                dp0=np.random.uniform(dpmin,0)
-                        
-                        while dp0>dpmax: #if more weakening than seen in the underlying dataset
-                            if y-dpmax<EPmu+2.*EPstd:
-                                epsilon=np.random.normal(EPmu,EPstd)
-                                dp0=y+epsilon
-                            else:
-                                dp0=np.random.uniform(0,dpmax)  
+                        # Fix 3+4: Two-piece normal with truncated sampling
+                        dp0 = _sample_truncated_twopn(
+                            y + EPmu, EPstd_neg, EPstd_pos, dpmin, dpmax
+                        )
                                 
                         if p<mpi:#if pressure has dropped below mpi
                             if dp0<0: #if intensification
