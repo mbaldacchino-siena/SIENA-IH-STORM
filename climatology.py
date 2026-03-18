@@ -20,7 +20,7 @@ import numpy as np
 from pathlib import Path
 
 
-def get_IBStrack(url, local_path, file_name):
+def _get_IBStrack(url, local_path, file_name):
     # Specify the local file path where you want to save the downloaded file
     local_file_path = local_path + file_name
 
@@ -45,7 +45,7 @@ def get_IBStrack(url, local_path, file_name):
 # ==============================================================================
 
 
-def get_climate_index(url, local_path):
+def _get_climate_index(url, local_path):
 
     # select the index from https://psl.noaa.gov/data/climateindices/list/
     # Send an HTTP GET request to the URL
@@ -89,7 +89,7 @@ def get_climate_index(url, local_path):
 # ==============================================================================
 
 
-def download_monthly_mean_SLP(dir_data, year_list):
+def _download_monthly_mean_SLP(dir_data, year_list):
 
     my_file = op.join(dir_data, "Monthly_mean_MSLP.nc")
 
@@ -128,7 +128,7 @@ def download_monthly_mean_SLP(dir_data, year_list):
 # ==============================================================================
 
 
-def download_monthly_mean_SST(dir_data, year_list):
+def _download_monthly_mean_SST(dir_data, year_list):
     my_file = op.join(dir_data, "Monthly_mean_SST.nc")
 
     if not Path(my_file).is_file():
@@ -161,11 +161,99 @@ def download_monthly_mean_SST(dir_data, year_list):
 
 
 # ==============================================================================
+# Function to get VWS from ERA5
+# ==============================================================================
+
+
+def _download_wind_shear_data(dir_data, year_list):
+    out_path = op.join(dir_data, "Monthly_mean_VWS_components.nc")
+
+    if not Path(out_path).is_file():
+        c = cdsapi.Client()
+        c.retrieve(
+            "reanalysis-era5-pressure-levels-monthly-means",
+            {
+                "format": "netcdf",
+                "product_type": "monthly_averaged_reanalysis",
+                "variable": ["u_component_of_wind", "v_component_of_wind"],
+                "pressure_level": ["200", "850"],
+                "year": year_list,
+                "month": [
+                    "01",
+                    "02",
+                    "03",
+                    "04",
+                    "05",
+                    "06",
+                    "07",
+                    "08",
+                    "09",
+                    "10",
+                    "11",
+                    "12",
+                ],
+                "time": "00:00",
+            },
+            out_path,
+        )
+    my_file = op.join(dir_data, "Monthly_mean_VWS.nc")
+    if not Path(my_file).is_file():
+        ds = xr.open_dataset(out_path)
+        u_name = "u" if "u" in ds.data_vars else list(ds.data_vars)[0]
+        v_name = "v" if "v" in ds.data_vars else list(ds.data_vars)[1]
+        level_name = "pressure_level" if "pressure_level" in ds.coords else "level"
+        u200 = ds[u_name].sel({level_name: 200})
+        u850 = ds[u_name].sel({level_name: 850})
+        v200 = ds[v_name].sel({level_name: 200})
+        v850 = ds[v_name].sel({level_name: 850})
+        vws = np.sqrt((u200 - u850) ** 2 + (v200 - v850) ** 2)
+        xr.Dataset({"vws": vws}).to_netcdf(my_file)
+        ds.close()
+
+
+# ==============================================================================
+# Function to get Relative Humidity from ERA5
+# ==============================================================================
+
+
+def _download_humidity_data(dir_data, year_list):
+    my_file = op.join(dir_data, "Monthly_mean_RH600.nc")
+    if not Path(my_file).is_file():
+        c = cdsapi.Client()
+        c.retrieve(
+            "reanalysis-era5-pressure-levels-monthly-means",
+            {
+                "format": "netcdf",
+                "product_type": "monthly_averaged_reanalysis",
+                "variable": "relative_humidity",
+                "pressure_level": "600",
+                "year": year_list,
+                "month": [
+                    "01",
+                    "02",
+                    "03",
+                    "04",
+                    "05",
+                    "06",
+                    "07",
+                    "08",
+                    "09",
+                    "10",
+                    "11",
+                    "12",
+                ],
+                "time": "00:00",
+            },
+            my_file,
+        )
+
+
+# ==============================================================================
 # Function to get T and Q profiles from ERA5 (at 1 degree)
 # ==============================================================================
 
 
-def download_profile_data(dir_data, year_list):
+def _download_profile_data(dir_data, year_list):
     """Download ERA5 T and Q on pressure levels for PI computation."""
     for varname, filename in [
         ("temperature", "Monthly_mean_T.nc"),
@@ -217,22 +305,23 @@ def download_profile_data(dir_data, year_list):
         )
 
 
-
 def climatology_data(year):
+    """Download the necessary data if not yet in local."""
 
     # identifying local path (where this code is located)
     local_path = os.getcwd()
     year_list = [str(year) for year in range(year[0], year[1] + 1)]
 
-    download_monthly_mean_SLP(local_path, year_list)
-    download_monthly_mean_SST(local_path, year_list)
-    download_humidity_data(local_path, year_list)
-    download_wind_shear_data(local_path, year_list)
+    _download_monthly_mean_SLP(local_path, year_list)
+    _download_monthly_mean_SST(local_path, year_list)
+    _download_humidity_data(local_path, year_list)
+    _download_wind_shear_data(local_path, year_list)
+    _download_profile_data(local_path, year_list)
 
     # download data from IBTrACS
     file_name = "/IBTrACS.ALL.v04r01.nc"
 
-    get_IBStrack(
+    _get_IBStrack(
         "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/netcdf/",
         local_path,
         file_name,
@@ -245,115 +334,7 @@ def climatology_data(year):
         filtered_cyclones.season <= year[1], drop=True
     )
     filtered_cyclones.to_netcdf(
-        local_path + "/IBTrACS." + str(year[0]) + "_" + str(year[1]) + "v04r00.nc"
-    )
-
-    # Download of climate index
-    get_climate_index("https://psl.noaa.gov/data/correlation/tna.data", local_path)
-
-
-def climatology_data_cliamte_index(climate_index, year, threshold):
-    # identifying local path (where this code is located)
-    local_path = os.getcwd()
-
-    # geratin a list of the years of interest
-    year_list = [str(year) for year in range(year[0], year[1] + 1)]
-
-    # ==============================================================================
-    # Download data
-    # UNCOMMENT IF DATASET IS IN THE LOCAL PATH
-    # ==============================================================================
-    # Download SLP for the range of years (this step can be omitted if data are in a local path)
-    # download_monthly_mean_SLP(local_path,year_list)
-
-    # Download SSST for the range of years(this step can be omitted if data are in a local path)
-    # download_monthly_mean_SST(local_path,year_list)
-
-    # Download data from IBTrACS (this step can be omitted if data are in a local path)
-    file_name = "/IBTrACS.ALL.v04r00.nc"
-    get_IBStrack(
-        "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r00/access/netcdf/",
-        local_path,
-        file_name,
-    )
-
-    # ====================================================================
-    #  CLIMATE INDEX
-    # Selects data of SLP, SST storms for specific months and years coinciding with a climate index
-    # ==============================================================================
-
-    # Download of climate index
-    get_climate_index(
-        "https://psl.noaa.gov/data/correlation/" + climate_index + ".data", local_path
-    )
-
-    # Filter data for specific years and phase
-    climate_index = pd.read_csv(local_path + "/climate_index.csv")
-
-    if threshold >= 0:
-        climate_index = climate_index[climate_index["climate_index"] >= threshold]
-    elif threshold < 0:
-        climate_index = climate_index[climate_index["climate_index"] <= threshold]
-
-    climate_index = climate_index[climate_index["year"] >= year[0]]
-    climate_index = climate_index[climate_index["year"] <= year[1]]
-
-    # ====================================================================
-    # Select data for SLP only months and years for the climate index
-    # ====================================================================
-    climate_index["date"] = pd.to_datetime(
-        climate_index["year"].astype(str) + climate_index["month"].astype(str),
-        format="%Y%m",
-    )
-    SLP = xr.open_dataset(local_path + "/Monthly_mean_MSLP_all.nc")
-    SLP["time"] = pd.to_datetime(SLP["time"])
-    SLP = SLP.sel(time=SLP["time"].isin(climate_index["date"]))
-
-    # save filtered SLP
-    SLP.to_netcdf(local_path + "/Monthly_mean_MSLP.nc")
-
-    # ====================================================================
-    # Select data for SST only months and years for the climate index
-    # ====================================================================
-
-    SST = xr.open_dataset(local_path + "/Monthly_mean_SST_all.nc")
-    SST["time"] = pd.to_datetime(SST["time"])
-    SST = SST.sel(time=SST["time"].isin(climate_index["date"]))
-
-    # save filtered SST
-    SST.to_netcdf(local_path + "/Monthly_mean_SST.nc")
-
-    # Select data for storms from IBTrACS only months and years for the climate index
-    cyclones = xr.open_dataset(local_path + file_name)
-    cyclones = xr.open_dataset(local_path + "/IBTrACS.ALL.v04r00.nc")
-
-    # convert dates to the same format, in this case year and months
-    datetime_array_month = cyclones["time"].values.astype("datetime64[M]")
-    climate_index["date"] = pd.to_datetime(
-        climate_index["year"].astype(str) + climate_index["month"].astype(str),
-        format="%Y%m",
-    ).dt.to_period("M")
-    dates_to_compare = climate_index["date"].to_numpy()
-    dates_to_compare = dates_to_compare.astype("datetime64[M]")
-
-    # ====================================================================
-    # Select data for TC only months and years for the climate index
-    # ====================================================================
-
-    # create a mask to identify storms belonging to a phase of the climate index
-    mask = np.zeros_like(datetime_array_month, dtype=bool)
-    for i in range(datetime_array_month.shape[0]):
-        for j in range(datetime_array_month.shape[1]):
-            # Check if the value coincides with any date in dates_array
-            if datetime_array_month[i, j] in dates_to_compare:
-                mask[i, j] = True
-
-    mask1 = mask[:, 0]
-    filtered_cyclones = cyclones.sel(storm=mask1)
-
-    # save filtered cyclones
-    filtered_cyclones.to_netcdf(
-        local_path + "/IBTrACS." + str(year[0]) + "_" + str(year[1]) + "v04r00.nc"
+        local_path + "/IBTrACS." + str(year[0]) + "_" + str(year[1]) + "v04r01.nc"
     )
 
 
@@ -362,7 +343,7 @@ def climatology_data_cliamte_index(climate_index, year, threshold):
 # ==========================
 
 
-def add_phase_labels(climate_df, positive_threshold=0.5, negative_threshold=-0.5):
+def _add_phase_labels(climate_df, positive_threshold=0.5, negative_threshold=-0.5):
     climate_df = climate_df.copy()
     climate_df["phase"] = np.where(
         climate_df["climate_index"] >= positive_threshold,
@@ -372,169 +353,99 @@ def add_phase_labels(climate_df, positive_threshold=0.5, negative_threshold=-0.5
     return climate_df
 
 
-def get_months_by_phase(climate_df, start_year=None, end_year=None):
-    climate_df = climate_df.copy()
-    if start_year is not None:
-        climate_df = climate_df[climate_df["year"] >= start_year]
-    if end_year is not None:
-        climate_df = climate_df[climate_df["year"] <= end_year]
-    climate_df["date"] = pd.to_datetime(
-        climate_df["year"].astype(str) + climate_df["month"].astype(str), format="%Y%m"
-    )
-    return {
-        phase: climate_df[climate_df["phase"] == phase]["date"].to_list()
-        for phase in ["LN", "NEU", "EN"]
-    }
-
-
-def save_phase_table(climate_df, local_path):
+def _save_phase_table(climate_df, local_path):
     climate_df.to_csv(op.join(local_path, "climate_index.csv"), index=False)
 
 
-def compute_monthly_climatology(
-    variable, months_by_phase, output_prefix, dataset_path=None
+def compute_phase_climatology(
+    nc_path, varname, oni_df, out_stem, out_dir, pressure_level_idx=None, unit_scale=1.0
 ):
-    local_path = os.getcwd()
-    if dataset_path is None:
-        dataset_path = op.join(local_path, f"Monthly_mean_{variable}.nc")
-    ds = xr.open_dataset(dataset_path)
-    if "valid_time" in ds.coords and "time" not in ds.coords:
-        ds = ds.rename({"valid_time": "time"})
-    time_name = "time"
-    var_candidates = [c for c in ds.data_vars.keys()]
-    var_name = var_candidates[0]
-    ds[time_name] = pd.to_datetime(ds[time_name].values)
-    if variable == "RH600":
-        ds = ds.isel(pressure_level=0)
-    for month in range(1, 13):
-        pooled = (
-            ds[var_name]
-            .sel({time_name: ds[time_name].dt.month == month})
-            .mean(time_name, skipna=True)
-            .values
+    """
+    Unified phase-specific climatology builder.
+
+    Parameters
+    ----------
+    nc_path : str, path to ERA5 .nc file
+    varname : str or None. If None, auto-detect first data variable.
+    oni_df : DataFrame with [year, month, phase]
+    out_stem : str, output file prefix (e.g. 'Monthly_mean_SST')
+    out_dir : str, output directory
+    pressure_level_idx : int or None, select a single pressure level if needed
+    unit_scale : float, multiply output by this (e.g. 0.01 for Pa→hPa)
+
+    Returns
+    -------
+    clim : dict {month: {phase: ndarray}}, the phase-specific fields
+    pooled : dict {month: ndarray}, the pooled fields
+    """
+    ds = xr.open_dataset(nc_path)
+
+    # Normalize time dimension name
+    time_dim = "valid_time" if "valid_time" in ds.dims else "time"
+
+    # Auto-detect variable
+    if varname is None or varname not in ds:
+        varname = list(ds.data_vars)[0]
+
+    # Select pressure level if needed
+    if pressure_level_idx is not None:
+        lvl_dim = "pressure_level" if "pressure_level" in ds.dims else "level"
+        ds = ds.isel({lvl_dim: pressure_level_idx})
+
+    # Build (year, month) → phase lookup
+    phase_lookup = {}
+    for _, row in oni_df.iterrows():
+        phase_lookup[(int(row["year"]), int(row["month"]))] = (
+            str(row["phase"]).strip().upper()
         )
-        # ---- FIX: ERA5 MSLP is in Pa, STORM expects hPa ----
-        if variable == "MSLP":
-            pooled = pooled / 100.0
-        np.savetxt(
-            op.join(local_path, f"Monthly_mean_{output_prefix}_{month}.txt"), pooled
-        )
-        for phase in ["LN", "NEU", "EN"]:
-            dates = months_by_phase.get(phase, [])
-            if len(dates) == 0:
-                continue
-            phase_ds = ds.sel({time_name: ds[time_name].isin(dates)})
-            phase_ds = phase_ds[var_name].sel(
-                {time_name: phase_ds[time_name].dt.month == month}
-            )
-            if phase_ds.sizes.get(time_name, 0) == 0:
-                continue
-            field = phase_ds.mean(time_name, skipna=True).values
-            # ---- FIX: ERA5 MSLP is in Pa, STORM expects hPa ----
-            if variable == "MSLP":
-                field = field / 100.0
-            np.savetxt(
-                op.join(
-                    local_path, f"Monthly_mean_{output_prefix}_{month}_{phase}.txt"
-                ),
-                field,
-            )
+
+    times = pd.to_datetime(ds[time_dim].values)
+    PHASES = ["LN", "NEU", "EN"]
+
+    # Accumulate per month × phase
+    accum = {m: {ph: [] for ph in PHASES} for m in range(1, 13)}
+    accum_pooled = {m: [] for m in range(1, 13)}
+
+    for t_idx in range(len(times)):
+        yr, mo = int(times[t_idx].year), int(times[t_idx].month)
+        ph = phase_lookup.get((yr, mo), "NEU")
+        field = ds[varname].isel({time_dim: t_idx}).values
+        accum[mo][ph].append(field)
+        accum_pooled[mo].append(field)
+
     ds.close()
 
+    # Average and save
+    clim = {m: {} for m in range(1, 13)}
+    pooled = {}
 
-def download_wind_shear_data(dir_data, year_list):
-    out_path = op.join(dir_data, "Monthly_mean_VWS_components.nc")
+    for m in range(1, 13):
+        # Pooled
+        if accum_pooled[m]:
+            p = np.nanmean(np.stack(accum_pooled[m]), axis=0) * unit_scale
+            np.savetxt(os.path.join(out_dir, f"{out_stem}_{m}.txt"), p)
+            pooled[m] = p
+        # Phase-specific
+        for ph in PHASES:
+            if accum[m][ph]:
+                f = np.nanmean(np.stack(accum[m][ph]), axis=0) * unit_scale
+            elif m in pooled:
+                f = pooled[m]  # fallback to pooled
+            else:
+                continue
+            np.savetxt(os.path.join(out_dir, f"{out_stem}_{m}_{ph}.txt"), f)
+            clim[m][ph] = f
 
-    if not Path(out_path).is_file():
-        c = cdsapi.Client()
-        c.retrieve(
-            "reanalysis-era5-pressure-levels-monthly-means",
-            {
-                "format": "netcdf",
-                "product_type": "monthly_averaged_reanalysis",
-                "variable": ["u_component_of_wind", "v_component_of_wind"],
-                "pressure_level": ["200", "850"],
-                "year": year_list,
-                "month": [
-                    "01",
-                    "02",
-                    "03",
-                    "04",
-                    "05",
-                    "06",
-                    "07",
-                    "08",
-                    "09",
-                    "10",
-                    "11",
-                    "12",
-                ],
-                "time": "00:00",
-            },
-            out_path,
-        )
-    my_file = op.join(dir_data, "Monthly_mean_VWS.nc")
-    if not Path(my_file).is_file():
-        ds = xr.open_dataset(out_path)
-        u_name = "u" if "u" in ds.data_vars else list(ds.data_vars)[0]
-        v_name = "v" if "v" in ds.data_vars else list(ds.data_vars)[1]
-        level_name = "pressure_level" if "pressure_level" in ds.coords else "level"
-        u200 = ds[u_name].sel({level_name: 200})
-        u850 = ds[u_name].sel({level_name: 850})
-        v200 = ds[v_name].sel({level_name: 200})
-        v850 = ds[v_name].sel({level_name: 850})
-        vws = np.sqrt((u200 - u850) ** 2 + (v200 - v850) ** 2)
-        xr.Dataset({"vws": vws}).to_netcdf(my_file)
-        ds.close()
-
-
-def download_humidity_data(dir_data, year_list):
-    my_file = op.join(dir_data, "Monthly_mean_RH600.nc")
-    if not Path(my_file).is_file():
-        c = cdsapi.Client()
-        c.retrieve(
-            "reanalysis-era5-pressure-levels-monthly-means",
-            {
-                "format": "netcdf",
-                "product_type": "monthly_averaged_reanalysis",
-                "variable": "relative_humidity",
-                "pressure_level": "600",
-                "year": year_list,
-                "month": [
-                    "01",
-                    "02",
-                    "03",
-                    "04",
-                    "05",
-                    "06",
-                    "07",
-                    "08",
-                    "09",
-                    "10",
-                    "11",
-                    "12",
-                ],
-                "time": "00:00",
-            },
-            my_file,
-        )
+    return clim, pooled
 
 
 def build_pooled_and_phase_climatologies(
-    period, climate_index="ONI", threshold=0.5, fetch_new=False
+    period, climate_index="ONI", threshold=0.5,
 ):
     local_path = os.getcwd()
-    year_list = [str(y) for y in range(period[0], period[1] + 1)]
-    if fetch_new:
-        download_monthly_mean_SLP(local_path, year_list)
-        download_monthly_mean_SST(local_path, year_list)
-        try:
-            download_wind_shear_data(local_path, year_list)
-            download_humidity_data(local_path, year_list)
-        except Exception as exc:
-            print(f"Warning: VWS/RH downloads failed: {exc}")
 
-    get_climate_index(
+    # Fetch and label climate index
+    _get_climate_index(
         f"https://psl.noaa.gov/data/correlation/{climate_index.lower()}.data",
         local_path,
     )
@@ -542,23 +453,29 @@ def build_pooled_and_phase_climatologies(
     climate_df = climate_df[
         (climate_df["year"] >= period[0]) & (climate_df["year"] <= period[1])
     ]
-    climate_df = add_phase_labels(
-        climate_df,
-        positive_threshold=abs(threshold),
-        negative_threshold=-abs(threshold),
-    )
-    print("Phase labels done")
-    save_phase_table(climate_df, local_path)
-    months_by_phase = get_months_by_phase(climate_df, period[0], period[1])
-    print("Get months by phase done")
-    compute_monthly_climatology("SST", months_by_phase, "SST")
-    print("Compute monthly SST done")
-    compute_monthly_climatology("MSLP", months_by_phase, "MSLP")
-    print("Compute MSLP done")
-    if op.exists(op.join(local_path, "Monthly_mean_VWS.nc")):
-        compute_monthly_climatology("VWS", months_by_phase, "VWS")
-        print("VWS done")
-    if op.exists(op.join(local_path, "Monthly_mean_RH600.nc")):
-        compute_monthly_climatology("RH600", months_by_phase, "RH600")
-        print("RH done")
+    climate_df = _add_phase_labels(climate_df, abs(threshold), -abs(threshold))
+    _save_phase_table(climate_df, local_path)
+
+    # Build all climatologies through the single unified function
+    variables = [
+        ("Monthly_mean_SST.nc", "sst", "Monthly_mean_SST", None, 1.0),
+        ("Monthly_mean_MSLP.nc", "msl", "Monthly_mean_MSLP", None, 0.01),
+        ("Monthly_mean_VWS.nc", "vws", "Monthly_mean_VWS", None, 1.0),
+        ("Monthly_mean_RH600.nc", "r", "Monthly_mean_RH600", 0, 1.0),
+    ]
+
+    for nc_file, varname, stem, plev, scale in variables:
+        nc_path = op.join(local_path, nc_file)
+        if op.exists(nc_path):
+            compute_phase_climatology(
+                nc_path,
+                varname,
+                climate_df,
+                stem,
+                local_path,
+                pressure_level_idx=plev,
+                unit_scale=scale,
+            )
+            print(f"{stem} done")
+
     return climate_df
