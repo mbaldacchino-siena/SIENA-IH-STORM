@@ -20,10 +20,12 @@ import os
 import numpy as np
 import warnings
 import climatology
-import xarray as xr 
+import xarray as xr
+from scipy.ndimage import zoom
 
 try:
     from tcpyPI import pi as calc_pi
+
     HAS_TCPYPI = True
 except ImportError:
     HAS_TCPYPI = False
@@ -36,6 +38,31 @@ except ImportError:
 
 PHASES = ["LN", "NEU", "EN"]
 PHASE_CODE = {"LN": 0, "NEU": 1, "EN": 2}
+
+
+def _coarsen_to_match(fine, coarse_shape):
+    """
+    Coarsen a 2D fine-resolution field to match a coarse target shape.
+    Uses scipy.ndimage.zoom with order=1 (bilinear).
+    """
+    if fine.shape == coarse_shape:
+        return fine
+    zy = coarse_shape[0] / fine.shape[0]
+    zx = coarse_shape[1] / fine.shape[1]
+    return zoom(fine, (zy, zx), order=1)
+
+
+def _upscale_to_target(coarse, target_shape):
+    """
+    Upscale a 2D coarse-resolution field to a fine target shape.
+    Uses scipy.ndimage.zoom with order=1 (bilinear).
+    PI varies smoothly over hundreds of km, so bilinear is appropriate.
+    """
+    if coarse.shape == target_shape:
+        return coarse
+    zy = target_shape[0] / coarse.shape[0]
+    zx = target_shape[1] / coarse.shape[1]
+    return zoom(coarse, (zy, zx), order=1)
 
 
 def _simplified_pi_point(sst_K, mslp_Pa):
@@ -62,7 +89,7 @@ def _simplified_pi_point(sst_K, mslp_Pa):
     pmin = mslp_hPa - dp
 
     # Approximate Vmax from pressure drop using typical WPR
-    vmax = 0.7 * dp ** 0.65 if dp > 0 else 0.0
+    vmax = 0.7 * dp**0.65 if dp > 0 else 0.0
 
     return pmin, vmax
 
@@ -144,9 +171,7 @@ def compute_pi_field_simplified(sst_K, mslp_Pa):
 
     for i in range(nlat):
         for j in range(nlon):
-            pmin[i, j], vmax[i, j] = _simplified_pi_point(
-                sst_K[i, j], mslp_Pa[i, j]
-            )
+            pmin[i, j], vmax[i, j] = _simplified_pi_point(sst_K[i, j], mslp_Pa[i, j])
 
     return pmin, vmax
 
@@ -210,6 +235,22 @@ def build_phase_specific_pi_climatologies(oni_df, era5_paths, out_dir):
             out_dir=None,
         )
 
+    # Determine the target (fine) grid shape from SST for final output
+    _sample_sst = next((sst_pooled[m] for m in range(1, 13) if m in sst_pooled), None)
+    fine_shape = _sample_sst.shape if _sample_sst is not None else None
+
+    # Determine the coarse grid shape from T profiles (if available)
+    coarse_shape = None
+    if t_pooled is not None:
+        _sample_t = next((t_pooled[m] for m in range(1, 13) if m in t_pooled), None)
+        if _sample_t is not None:
+            # T has shape (levels, lat, lon) — coarse shape is the spatial part
+            coarse_shape = _sample_t.shape[-2:]
+
+    if fine_shape and coarse_shape and fine_shape != coarse_shape:
+        print(f"  Grid mismatch: SST/MSLP={fine_shape}, T/Q={coarse_shape}")
+        print(f"  Will compute PI at {coarse_shape}, then upscale to {fine_shape}")
+
     # Compute PI for each month × phase
     for month in range(1, 13):
         for phase in PHASES:
@@ -225,7 +266,15 @@ def build_phase_specific_pi_climatologies(oni_df, era5_paths, out_dir):
                 t = t_clim[month].get(phase)
                 q = q_clim[month].get(phase)
                 if t is not None and q is not None:
-                    pmin, vmax = compute_pi_field_tcpyPI(sst, mslp, t, q, p_lev_hPa)
+                    # Coarsen SST/MSLP to match T/Q grid if needed
+                    tq_spatial = t.shape[-2:]
+                    sst_c = _coarsen_to_match(sst, tq_spatial)
+                    mslp_c = _coarsen_to_match(mslp, tq_spatial)
+                    pmin, vmax = compute_pi_field_tcpyPI(sst_c, mslp_c, t, q, p_lev_hPa)
+                    # Upscale back to fine grid for consistency with other fields
+                    if fine_shape and pmin.shape != fine_shape:
+                        pmin = _upscale_to_target(pmin, fine_shape)
+                        vmax = _upscale_to_target(vmax, fine_shape)
                 else:
                     pmin, vmax = compute_pi_field_simplified(sst, mslp)
             else:
@@ -247,9 +296,14 @@ def build_phase_specific_pi_climatologies(oni_df, era5_paths, out_dir):
                 t_p = t_pooled.get(month)
                 q_p = q_pooled.get(month)
                 if t_p is not None and q_p is not None:
+                    tq_spatial = t_p.shape[-2:]
+                    sst_pc = _coarsen_to_match(sst_p, tq_spatial)
+                    mslp_pc = _coarsen_to_match(mslp_p, tq_spatial)
                     pmin_p, vmax_p = compute_pi_field_tcpyPI(
-                        sst_p, mslp_p, t_p, q_p, p_lev_hPa
+                        sst_pc, mslp_pc, t_p, q_p, p_lev_hPa
                     )
+                    if fine_shape and pmin_p.shape != fine_shape:
+                        pmin_p = _upscale_to_target(pmin_p, fine_shape)
                 else:
                     pmin_p, vmax_p = compute_pi_field_simplified(sst_p, mslp_p)
             else:
@@ -258,4 +312,3 @@ def build_phase_specific_pi_climatologies(oni_df, era5_paths, out_dir):
             np.savetxt(os.path.join(out_dir, f"Monthly_mean_PI_{month}.txt"), pmin_p)
 
     print("PI climatologies complete.")
-
