@@ -16,6 +16,7 @@ import os.path as op
 import cdsapi
 import pandas as pd
 import numpy as np
+from potential_intensity import build_phase_specific_pi_climatologies
 
 from pathlib import Path
 
@@ -479,5 +480,25 @@ def build_pooled_and_phase_climatologies(
                 unit_scale=scale,
             )
             print(f"{stem} done")
+
+    # 2. PI — uses T, Q, SST, MSLP internally, saves only PI
+    era5_paths = {}
+    for key, fname in [
+        ("sst", "Monthly_mean_SST.nc"),
+        ("mslp", "Monthly_mean_MSLP.nc"),
+        ("t", "Monthly_mean_T.nc"),
+        ("q", "Monthly_mean_Q.nc"),
+    ]:
+        p = op.join(local_path, fname)
+        if op.exists(p):
+            era5_paths[key] = p
+
+    if "sst" in era5_paths and "mslp" in era5_paths:
+        build_phase_specific_pi_climatologies(
+            climate_df,
+            era5_paths,
+            local_path,
+        )
+        print("PI done")
 
     return climate_df
