@@ -1,4 +1,6 @@
 """
+@author: Mathys Baldacchino, mathys.baldacchino@sienacapitalgroup.com
+
 Potential Intensity (PI) precomputation for SIENA-IH-STORM.
 
 Computes thermodynamic PI following Bister & Emanuel (2002) via the tcpyPI
@@ -11,7 +13,7 @@ If tcpyPI is not installed, falls back to a simplified SST-based
 approximation that still improves on the original DeMaria & Kaplan curve
 by incorporating MSLP and a basic CAPE-like correction.
 
-@mbaldacchino 2026
+Copyright (C) 2026 Mathys Baldacchino
 """
 
 import os
