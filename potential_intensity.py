@@ -113,9 +113,9 @@ def compute_pi_field_tcpyPI(sst_K, mslp_Pa, t_K, q_kgkg, p_lev_hPa):
                 # pi(TEFULL, p, tc, r, TEFULL is SST in K, p levels in hPa,
                 #    tc is temperature in C, r is mixing ratio in g/kg)
                 result = calc_pi(
-                    sst,           # SST in K  (or C depending on version)
-                    psl,           # surface pressure hPa
-                    p_lev_hPa,    # pressure levels hPa
+                    sst - 273.15,  # SST in K  (or C depending on version)
+                    psl,  # surface pressure hPa
+                    p_lev_hPa,  # pressure levels hPa
                     t_col - 273.15,  # temperature in Celsius
                     r_col * 1000.0,  # mixing ratio in g/kg
                 )
