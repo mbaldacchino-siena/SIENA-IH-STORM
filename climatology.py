@@ -160,6 +160,64 @@ def download_monthly_mean_SST(dir_data, year_list):
         )
 
 
+# ==============================================================================
+# Function to get T and Q profiles from ERA5 (at 1 degree)
+# ==============================================================================
+
+
+def download_profile_data(dir_data, year_list):
+    """Download ERA5 T and Q on pressure levels for PI computation."""
+    for varname, filename in [
+        ("temperature", "Monthly_mean_T.nc"),
+        ("specific_humidity", "Monthly_mean_Q.nc"),
+    ]:
+        out = op.join(dir_data, filename)
+        if Path(out).is_file():
+            continue
+        c = cdsapi.Client()
+        c.retrieve(
+            "reanalysis-era5-pressure-levels-monthly-means",
+            {
+                "format": "netcdf",
+                "product_type": "monthly_averaged_reanalysis",
+                "variable": varname,
+                "pressure_level": [
+                    "1000",
+                    "925",
+                    "850",
+                    "700",
+                    "600",
+                    "500",
+                    "400",
+                    "300",
+                    "250",
+                    "200",
+                    "150",
+                    "100",
+                ],
+                "year": year_list,
+                "month": [
+                    "01",
+                    "02",
+                    "03",
+                    "04",
+                    "05",
+                    "06",
+                    "07",
+                    "08",
+                    "09",
+                    "10",
+                    "11",
+                    "12",
+                ],
+                "time": "00:00",
+                "grid": ["1.0", "1.0"],  # coarser grid to save RAM
+            },
+            out,
+        )
+
+
+
 def climatology_data(year):
 
     # identifying local path (where this code is located)
