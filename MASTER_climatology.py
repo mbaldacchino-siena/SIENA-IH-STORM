@@ -1,10 +1,12 @@
-# -*- coding: utf-8 -*-
 """
-This module is part of the IH-STORM model
+This module is part of the SIENA-IH-STORM model
 
 Functions described here are part of the data pre-processing.
+Strongly inspired from 2024 Itxaso Odériz.
 
-Copyright (C) 2024 Itxaso Odériz.
+Copyright (C) 2026 Mathys Baldacchino.
+ 
+
 """
 
 import os
