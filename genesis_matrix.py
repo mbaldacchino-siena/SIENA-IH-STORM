@@ -205,6 +205,138 @@ def Change_genesis_locations_STORM():
 MIN_GENESIS_FOR_PHASE_GRID = 5
 
 
+def build_environmental_genesis_factor(basin, month, phase=None):
+    """
+    Build an environmental genesis favorability grid based on PI, VWS, and RH.
+
+    Follows the Genesis Potential Index (GPI) logic of Camargo et al. (2007,
+    doi:10.1175/JCLI4282.1) and Emanuel & Nolan (2004). The multiplicative
+    form captures ENSO-driven spatial shifts in genesis far better than sparse
+    observational counts alone.
+
+    The environmental factor is:
+        E = PI_term * VWS_term * RH_term
+
+    where:
+        PI_term  = clip((PI_ref - PI) / PI_scale, 0, ...)   [lower PI = more intense ceiling = favorable]
+        VWS_term = exp(-alpha * VWS)                         [low shear = favorable]
+        RH_term  = clip(RH / RH_ref, 0.2, 2.0)              [high RH = favorable]
+
+    Returns a normalized 1-degree grid matching the basin dimensions,
+    or None if no environmental fields are available.
+    """
+    from siena_utils import load_monthly_field
+
+    lat0, lat1, lon0, lon1 = BOUNDARIES_BASINS(basin)
+    xg = int(abs(lon1 - lon0))
+    yg = int(abs(lat1 - lat0))
+
+    # Try to load environmental fields
+    has_any = False
+    pi_field = vws_field = rh_field = None
+
+    phase_str = phase if phase is not None else None
+
+    # Load PI (thermodynamic or empirical)
+    try:
+        pi_global = load_monthly_field(__location__, "Monthly_mean_PI", month, phase=phase_str)
+        # Extract basin region — PI is on global SST grid (721 x 1440, 0.25deg)
+        lat_grid = np.linspace(90, -90, pi_global.shape[0])
+        lon_grid = np.linspace(0, 359.75, pi_global.shape[1])
+        lat_0i = np.abs(lat_grid - lat1).argmin()
+        lat_1i = np.abs(lat_grid - lat0).argmin()
+        lon_0i = np.abs(lon_grid - lon0).argmin()
+        lon_1i = np.abs(lon_grid - lon1).argmin()
+        pi_basin = pi_global[lat_0i:lat_1i, lon_0i:lon_1i]
+        # Resample to 1-degree grid
+        from scipy.ndimage import zoom
+        if pi_basin.shape[0] > 0 and pi_basin.shape[1] > 0:
+            zy = yg / pi_basin.shape[0]
+            zx = xg / pi_basin.shape[1]
+            pi_field = zoom(pi_basin, (zy, zx), order=1)
+            has_any = True
+    except Exception:
+        pass
+
+    # Load VWS
+    try:
+        vws_global = load_monthly_field(__location__, "Monthly_mean_VWS", month, phase=phase_str)
+        lat_grid = np.linspace(90, -90, vws_global.shape[0])
+        lon_grid = np.linspace(0, 359.75, vws_global.shape[1])
+        lat_0i = np.abs(lat_grid - lat1).argmin()
+        lat_1i = np.abs(lat_grid - lat0).argmin()
+        lon_0i = np.abs(lon_grid - lon0).argmin()
+        lon_1i = np.abs(lon_grid - lon1).argmin()
+        vws_basin = vws_global[lat_0i:lat_1i, lon_0i:lon_1i]
+        from scipy.ndimage import zoom
+        if vws_basin.shape[0] > 0 and vws_basin.shape[1] > 0:
+            zy = yg / vws_basin.shape[0]
+            zx = xg / vws_basin.shape[1]
+            vws_field = zoom(vws_basin, (zy, zx), order=1)
+            has_any = True
+    except Exception:
+        pass
+
+    # Load RH600
+    try:
+        rh_global = load_monthly_field(__location__, "Monthly_mean_RH600", month, phase=phase_str)
+        lat_grid = np.linspace(90, -90, rh_global.shape[0])
+        lon_grid = np.linspace(0, 359.75, rh_global.shape[1])
+        lat_0i = np.abs(lat_grid - lat1).argmin()
+        lat_1i = np.abs(lat_grid - lat0).argmin()
+        lon_0i = np.abs(lon_grid - lon0).argmin()
+        lon_1i = np.abs(lon_grid - lon1).argmin()
+        rh_basin = rh_global[lat_0i:lat_1i, lon_0i:lon_1i]
+        from scipy.ndimage import zoom
+        if rh_basin.shape[0] > 0 and rh_basin.shape[1] > 0:
+            zy = yg / rh_basin.shape[0]
+            zx = xg / rh_basin.shape[1]
+            rh_field = zoom(rh_basin, (zy, zx), order=1)
+            has_any = True
+    except Exception:
+        pass
+
+    if not has_any:
+        return None
+
+    # Build environmental factor
+    env = np.ones((yg, xg))
+
+    if pi_field is not None:
+        # PI is minimum central pressure — lower = more intense ceiling = more favorable
+        # Normalize: favorable where PI is low (< ~980 hPa)
+        pi_field = np.nan_to_num(pi_field, nan=1020.0)
+        pi_term = np.clip((1020.0 - pi_field) / 60.0, 0.0, 3.0)
+        # Ensure shape match
+        pi_term = pi_term[:env.shape[0], :env.shape[1]]
+        env[:pi_term.shape[0], :pi_term.shape[1]] *= pi_term
+
+    if vws_field is not None:
+        vws_field = np.nan_to_num(vws_field, nan=15.0)
+        vws_term = np.exp(-0.10 * np.maximum(vws_field, 0.0))
+        vws_term = vws_term[:env.shape[0], :env.shape[1]]
+        env[:vws_term.shape[0], :vws_term.shape[1]] *= vws_term
+
+    if rh_field is not None:
+        rh_field = np.nan_to_num(rh_field, nan=50.0)
+        # RH can be in fraction (0-1) or percent (0-100)
+        if np.nanmax(rh_field) < 2.0:
+            rh_field = rh_field * 100.0
+        rh_term = np.clip(rh_field / 60.0, 0.2, 2.5)
+        rh_term = rh_term[:env.shape[0], :env.shape[1]]
+        env[:rh_term.shape[0], :rh_term.shape[1]] *= rh_term
+
+    env = np.nan_to_num(env, nan=0.0, posinf=0.0, neginf=0.0)
+    env[env < 0] = 0.0
+
+    # Normalize
+    s = env.sum()
+    if s > 0:
+        env = env / s
+
+    return env
+
+
 def Change_genesis_locations(idx_basin, months):
 
     basin_name = ["EP", "NA", "NI", "SI", "SP", "WP"]
@@ -234,6 +366,22 @@ def Change_genesis_locations(idx_basin, months):
             print("genesis grid for basin ", basin, "and month ", month)
             matrix_dict = create_5deg_grid(locations[idx], month, basin)
             genesis_grids = create_1deg_grid(matrix_dict, basin, month)
+
+            # Fix 5: Apply environmental genesis weighting (pooled)
+            env_pooled = build_environmental_genesis_factor(basin, month, phase=None)
+            if env_pooled is not None:
+                # Ensure shape compatibility
+                rows = min(genesis_grids.shape[0], env_pooled.shape[0])
+                cols = min(genesis_grids.shape[1], env_pooled.shape[1])
+                weighted = genesis_grids[:rows, :cols] * env_pooled[:rows, :cols]
+                weighted = np.nan_to_num(weighted, nan=0.0)
+                weighted[weighted < 0] = 0.0
+                if weighted.sum() > 0:
+                    # Preserve original total mass so Poisson count is unaffected
+                    weighted = weighted * (genesis_grids.sum() / weighted.sum())
+                    genesis_grids[:rows, :cols] = weighted[:rows, :cols]
+                print(f"  Applied environmental weighting (pooled) for {basin}/{month}")
+
             np.savetxt(
                 os.path.join(
                     __location__, "GRID_GENESIS_MATRIX_{}_{}.txt".format(idx, month)
@@ -246,13 +394,10 @@ def Change_genesis_locations(idx_basin, months):
 
                     # ---- FIX: skip phase grid if too few genesis events ----
                     if len(phase_locs) < MIN_GENESIS_FOR_PHASE_GRID:
-                        # Don't write a phase-specific file — SAMPLE_STARTING_POINT
-                        # will automatically fall back to the pooled grid
                         print(
                             f"  Skipping phase grid {basin}/{month}/{phase}: "
                             f"only {len(phase_locs)} events (min={MIN_GENESIS_FOR_PHASE_GRID})"
                         )
-                        # Remove stale file if it exists from a previous run
                         stale = os.path.join(
                             __location__,
                             "GRID_GENESIS_MATRIX_{}_{}_{}.txt".format(
@@ -271,6 +416,20 @@ def Change_genesis_locations(idx_basin, months):
                         genesis_phase = create_1deg_grid(
                             matrix_dict_phase, basin, month
                         )
+
+                        # Fix 5: Apply phase-specific environmental weighting
+                        env_phase = build_environmental_genesis_factor(basin, month, phase=phase)
+                        if env_phase is not None:
+                            rows = min(genesis_phase.shape[0], env_phase.shape[0])
+                            cols = min(genesis_phase.shape[1], env_phase.shape[1])
+                            weighted = genesis_phase[:rows, :cols] * env_phase[:rows, :cols]
+                            weighted = np.nan_to_num(weighted, nan=0.0)
+                            weighted[weighted < 0] = 0.0
+                            if weighted.sum() > 0:
+                                weighted = weighted * (genesis_phase.sum() / weighted.sum())
+                                genesis_phase[:rows, :cols] = weighted[:rows, :cols]
+                            print(f"  Applied environmental weighting ({phase}) for {basin}/{month}")
+
                         np.savetxt(
                             os.path.join(
                                 __location__,
@@ -282,7 +441,6 @@ def Change_genesis_locations(idx_basin, months):
                         )
                     except Exception as e:
                         print(f"  Phase grid failed for {basin}/{month}/{phase}: {e}")
-                        # Remove stale file
                         stale = os.path.join(
                             __location__,
                             "GRID_GENESIS_MATRIX_{}_{}_{}.txt".format(
