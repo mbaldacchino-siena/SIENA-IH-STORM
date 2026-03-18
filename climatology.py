@@ -1,7 +1,7 @@
 """
 @author: Mathys Baldacchino, mathys.baldacchino@sienacapitalgroup.com
 
-Climatalogy's cyclone to execute SIENA-IH-STORM
+Climatology's cyclone to execute SIENA-IH-STORM
 This programs select SIENA-IH-STORM data (cyclones, SST, SLP, VWS, RH) for different climatology periods
 It also downloads necessary profile data for Potential Indexing.
 It is strongly inspired by I. Oderiz (C) 2025 [Itxaso Oderiz, itxaso.oderiz@unican.es]
