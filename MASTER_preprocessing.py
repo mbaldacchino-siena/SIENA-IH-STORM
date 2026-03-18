@@ -17,7 +17,6 @@ import coefficients
 import environmental
 import genesis_matrix
 import import_data
-import potential_intensity
 from siena_utils import load_climate_index_table
 
 dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
@@ -35,7 +34,7 @@ __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file
     generation_phase,
 ) = import_data.input_data("input.dat")
 
-TC_file = "IBTrACS." + str(period[0]) + "_" + str(period[1]) + "v04r00.nc"
+TC_file = "IBTrACS." + str(period[0]) + "_" + str(period[1]) + "v04r01.nc"
 print("********************************")
 data = xr.open_dataset(os.path.join(__location__, TC_file), decode_times=False)
 
