@@ -16,7 +16,7 @@ import os.path as op
 import cdsapi
 import pandas as pd
 import numpy as np
-from potential_intensity import build_phase_specific_pi_climatologies
+import potential_intensity 
 
 from pathlib import Path
 
@@ -359,7 +359,8 @@ def _save_phase_table(climate_df, local_path):
 
 
 def compute_phase_climatology(
-    nc_path : str, varname : str | None, oni_df : pd.DataFrame, out_stem : str, out_dir : str | None, pressure_level_idx : int | None =None, unit_scale : float =1.0,
+    nc_path : str, varname : str | None, oni_df : pd.DataFrame, out_stem : str,
+      out_dir : str | None, pressure_level_idx : int | None =None, unit_scale : float =1.0,
 ) -> tuple[dict,dict]:
     """
     Unified phase-specific climatology builder.
@@ -494,7 +495,7 @@ def build_pooled_and_phase_climatologies(
             era5_paths[key] = p
 
     if "sst" in era5_paths and "mslp" in era5_paths:
-        build_phase_specific_pi_climatologies(
+        potential_intensity.build_phase_specific_pi_climatologies(
             climate_df,
             era5_paths,
             local_path,
