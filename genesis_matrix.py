@@ -436,7 +436,7 @@ def Change_genesis_locations(idx_basin, months):
         "SP": months[4],
         "WP": months[5],
     }
-    genesis_mode = os.environ.get("GENESIS_WEIGHTING", "EMPIRICAL").upper()
+    genesis_mode = os.environ.get("genesis_weighting", "EMPIRICAL").upper()
 
     locations = np.load(
         os.path.join(__location__, "GEN_LOC.npy"), allow_pickle=True, encoding="latin1"
