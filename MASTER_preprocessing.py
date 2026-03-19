@@ -139,6 +139,7 @@ preprocessing.TC_variables(
     rh_fields=rh_fields,
     latitudes=latitudes,
     longitudes=longitudes,
+    phase_month_counts=phase_month_counts,
 )
 print("TC_variables done")
 
