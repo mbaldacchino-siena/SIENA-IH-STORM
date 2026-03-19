@@ -310,5 +310,8 @@ def build_phase_specific_pi_climatologies(oni_df, era5_paths, out_dir):
                 pmin_p, vmax_p = compute_pi_field_simplified(sst_p, mslp_p)
 
             np.savetxt(os.path.join(out_dir, f"Monthly_mean_PI_{month}.txt"), pmin_p)
+            np.savetxt(
+                os.path.join(out_dir, f"Monthly_mean_VMAX_PI_{month}.txt"), vmax_p
+            )
 
     print("PI climatologies complete.")
