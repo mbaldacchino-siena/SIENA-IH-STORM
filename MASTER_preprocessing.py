@@ -5,6 +5,7 @@ Master program for pooled SIENA-IH-STORM preprocessing.
 Fixes applied:
   Fix 1: Phase-specific VWS and RH600 climatologies
   Fix 2: Thermodynamic PI fields (replaces empirical SST-based MPI)
+  C4 Fix: Season-level ENSO phase assignment (prevents Poisson double-counting)
 """
 
 import os
@@ -17,7 +18,7 @@ import coefficients
 import environmental
 import genesis_matrix
 import import_data
-from siena_utils import load_climate_index_table
+from siena_utils import load_climate_index_table, count_phase_months
 
 dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
@@ -75,6 +76,24 @@ print("extract_data done")
 # ============================================================================
 print("********************************")
 oni_table = load_climate_index_table(os.path.join(__location__, "climate_index.csv"))
+
+# ============================================================================
+# C4 FIX: Count active-season months per ENSO phase (exposure denominator)
+# ============================================================================
+print("********************************")
+phase_month_counts = count_phase_months(oni_table, months, threshold=abs(threshold))
+basin_names = ["EP", "NA", "NI", "SI", "SP", "WP"]
+for idx in range(6):
+    L = len(months[idx])
+    pmc = phase_month_counts[idx]
+    total = sum(pmc.values())
+    print(
+        f"  {basin_names[idx]} (L={L}): "
+        f"LN={pmc[0]} months ({pmc[0] / L:.1f} yr-equiv), "
+        f"NEU={pmc[1]} months ({pmc[1] / L:.1f} yr-equiv), "
+        f"EN={pmc[2]} months ({pmc[2] / L:.1f} yr-equiv), "
+        f"total={total} (expected={L * len(np.unique(oni_table['year']))})"
+    )
 
 # ============================================================================
 # Load VWS/RH fields for TC_variables — phase-aware keying
