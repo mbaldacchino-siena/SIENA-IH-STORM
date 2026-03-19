@@ -774,8 +774,15 @@ def _fit_pressure_model_siena(dp0, presmpi, vws, rh, i_en, i_ln, dp1, lambda_pha
     # rapid intensification events produce a heavier left tail than the symmetric
     # normal assumed in Bloemendaal et al. (2020).
     # (John 1982, Commun. Stat. Theory Methods 11(8), 879-885)
-    std_neg = float(np.sqrt(np.mean(neg**2))) if len(neg) > 1 else float(np.std(resid))
-    std_pos = float(np.sqrt(np.mean(pos**2))) if len(pos) > 1 else float(np.std(resid))
+
+    std_floor = 1e-6
+    std_sym = float(np.std(resid))
+    if not np.isfinite(std_sym) or std_sym < std_floor:
+        std_sym = std_floor
+    std_neg = float(np.sqrt(np.mean(neg**2))) if len(neg) > 1 else std_sym
+    std_pos = float(np.sqrt(np.mean(pos**2))) if len(pos) > 1 else std_sym
+    std_neg = max(std_neg, std_floor)
+    std_pos = max(std_pos, std_floor)
     return theta, pred, resid, mu, std_neg, std_pos
 
 
