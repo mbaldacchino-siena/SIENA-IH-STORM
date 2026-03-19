@@ -770,26 +770,113 @@ def _fit_pressure_model_siena(dp0, presmpi, vws, rh, i_en, i_ln, dp1, lambda_pha
     neg = centered[centered < 0]
     pos = centered[centered >= 0]
     # Two-piece normal: separate sigma for intensification (neg dp) vs weakening (pos dp)
-    # This captures the heavy tail of rapid intensification events
-    # (Kaplan & DeMaria 2003, doi:10.1175/1520-0434(2003)018<1093:LNARP>2.0.CO;2)
-    std_neg = float(np.sqrt(np.mean(neg ** 2))) if len(neg) > 1 else float(np.std(resid))
-    std_pos = float(np.sqrt(np.mean(pos ** 2))) if len(pos) > 1 else float(np.std(resid))
+    # This captures the asymmetric tails of TC pressure change residuals, where
+    # rapid intensification events produce a heavier left tail than the symmetric
+    # normal assumed in Bloemendaal et al. (2020).
+    # (John 1982, Commun. Stat. Theory Methods 11(8), 879-885)
+    std_neg = float(np.sqrt(np.mean(neg**2))) if len(neg) > 1 else float(np.std(resid))
+    std_pos = float(np.sqrt(np.mean(pos**2))) if len(pos) > 1 else float(np.std(resid))
     return theta, pred, resid, mu, std_neg, std_pos
 
 
+# =========================================================================
+# H1 FIX: Two-stage CV for pressure model lambda selection
+# =========================================================================
 
-def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
+PRESSURE_LAMBDA_GRID = [0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
+
+
+def _select_lambda_pressure_cv(df_basin, lambda_grid=None, min_fold_size=20):
+    """
+    Two-stage leave-one-year-out CV for pressure model ridge penalty.
+
+    Stage 1: Fit base model (a,b,c,d,c_vws,c_rh) WITHOUT ENSO terms
+             (using very high lambda to zero them out) on full basin data.
+    Stage 2: Compute residuals from Stage 1. These residuals contain the
+             ENSO signal. Run linear CV on residual ~ c_en*I_EN + c_ln*I_LN
+             to select optimal lambda for the ENSO terms.
+
+    This two-stage approach is standard for partially linear models and
+    avoids running 320+ nonlinear least_squares fits during CV.
+
+    Returns
+    -------
+    best_lambda : float
+    cv_results : list of (lambda, mean_mse)
+    """
+    if lambda_grid is None:
+        lambda_grid = PRESSURE_LAMBDA_GRID
+
+    dp0 = df_basin["DP0"].values
+    dp1 = df_basin["DP1"].values
+    presmpi = np.maximum(0.0, df_basin["Pressure"].values - df_basin["MPI"].values)
+    vws = np.nan_to_num(df_basin["VWS"].values.astype(float))
+    rh = np.nan_to_num(df_basin["RH600"].values.astype(float))
+    i_en = df_basin["I_EN"].values.astype(float)
+    i_ln = df_basin["I_LN"].values.astype(float)
+    years = df_basin["Year"].values.astype(float)
+
+    if len(dp0) < 100:
+        return 5.0, []
+
+    # Stage 1: Fit base model with ENSO terms effectively zeroed
+    # (lambda_phase=1e6 forces c_en ≈ 0, c_ln ≈ 0)
+    try:
+        theta_base, _, _, _, _, _ = _fit_pressure_model_siena(
+            dp0, presmpi, vws, rh, i_en, i_ln, dp1, lambda_phase=1e6
+        )
+    except Exception:
+        return 5.0, []
+
+    # Base prediction (ENSO terms are ~0)
+    base_pred = PRESEXPECTED_SIENA(
+        dp0,
+        presmpi,
+        *theta_base[:4],
+        c_vws=theta_base[4],
+        c_rh=theta_base[5],
+        c_en=0.0,
+        c_ln=0.0,
+        vws=vws,
+        rh=rh,
+        i_en=i_en,
+        i_ln=i_ln,
+    )
+    residuals_base = dp1 - base_pred
+
+    # Stage 2: Linear CV on residual ~ c_en*I_EN + c_ln*I_LN
+    X_enso = np.column_stack([i_en, i_ln])
+    # After intercept prepend: col 0=intercept, 1=I_EN, 2=I_LN
+    from siena_utils import select_lambda_cv
+
+    best_lambda, best_mse, cv_results = select_lambda_cv(
+        X_enso,
+        residuals_base,
+        years,
+        penalty_cols=[1, 2],
+        lambda_grid=lambda_grid,
+        add_intercept=True,
+        min_fold_size=min_fold_size,
+    )
+    return best_lambda, cv_results
+
+
+def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=None):
     """
     Calculate pressure coefficients using pooled fitting while preserving the original
     nonlinear James-Mason / MPI mean structure.
+
+    H1 FIX: If lambda_phase is None (default), select lambda per basin via
+    two-stage leave-one-year-out CV. If a float is provided, use that value
+    for all basins (legacy behavior).
 
     Fitted mean function per local 5x5 degree cell:
         dp1 = a + b*dp0 + c*exp(-d*(p-MPI)+) + c_vws*VWS + c_rh*RH + c_en*I_EN + c_ln*I_LN + eps
 
     Only the ENSO terms (c_en, c_ln) are shrinkage-penalized.
     Stored coefficient order per cell is:
-        [a, b, c, d, mu, std, mpi, c_vws, c_rh, c_en, c_ln]
-    where mu/std are residual moments of eps = dp1 - E[dp1 | X].
+        [a, b, c, d, mu, std_neg, std_pos, mpi, c_vws, c_rh, c_en, c_ln]
+    where mu/std_neg/std_pos are residual moments of eps = dp1 - E[dp1 | X].
     """
     data = xr.open_dataset(os.path.join(__location__, "Monthly_mean_SST.nc"))
     lon = data.longitude.values
@@ -801,6 +888,8 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
     ).item()
 
     coeflist = {i: [] for i in range(0, 6)}
+    basin_names = ["EP", "NA", "NI", "SI", "SP", "WP"]
+    lambda_report = {}
 
     for ii in range(len(idx_basin)):
         idx = idx_basin[ii]
@@ -810,15 +899,64 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
         lat_0 = np.abs(lat - lat1).argmin()
         lon_0 = np.abs(lon - lon0).argmin()
 
+        # --- H1 FIX: Basin-level lambda selection via CV ---
+        # Pool all months for this basin to select lambda once
+        if lambda_phase is None:
+            df_all_months = pd.DataFrame(
+                {
+                    "Latitude": pres_variables[3][idx],
+                    "Longitude": pres_variables[4][idx],
+                    "Pressure": pres_variables[2][idx],
+                    "DP0": pres_variables[0][idx],
+                    "DP1": pres_variables[1][idx],
+                    "Month": pres_variables[5][idx],
+                    "Phase": pres_variables[6][idx]
+                    if 6 in pres_variables
+                    else np.ones(len(pres_variables[0][idx])),
+                    "Year": pres_variables[7][idx]
+                    if 7 in pres_variables
+                    else np.zeros(len(pres_variables[0][idx])),
+                    "VWS": pres_variables[8][idx]
+                    if 8 in pres_variables
+                    else np.nan * np.ones(len(pres_variables[0][idx])),
+                    "RH600": pres_variables[9][idx]
+                    if 9 in pres_variables
+                    else np.nan * np.ones(len(pres_variables[0][idx])),
+                }
+            )
+            df_all_months = df_all_months[
+                (df_all_months["Pressure"] > 0.0)
+                & (df_all_months["DP0"] > -10000.0)
+                & (df_all_months["DP1"] > -10000.0)
+            ].copy()
+            df_all_months["I_EN"] = (df_all_months["Phase"] == 2).astype(float)
+            df_all_months["I_LN"] = (df_all_months["Phase"] == 0).astype(float)
+            # Use median MPI across all cells as a representative value
+            # (cell-specific MPI is used in the actual fit, this is only for CV)
+            df_all_months["MPI"] = df_all_months["Pressure"].median() - 30.0
+
+            basin_lambda, cv_results = _select_lambda_pressure_cv(
+                df_all_months, lambda_grid=PRESSURE_LAMBDA_GRID
+            )
+            print(f"  {basin_names[idx]}: CV-selected pressure λ={basin_lambda:.1f}")
+            if cv_results:
+                for lam_val, mse_val in cv_results:
+                    print(f"    λ={lam_val:.1f} -> MSE={mse_val:.4f}")
+        else:
+            basin_lambda = float(lambda_phase)
+            print(f"  {basin_names[idx]}: Fixed pressure λ={basin_lambda}")
+        lambda_report[idx] = basin_lambda
+
         for i in range(len(months[idx])):
             m = months[idx][i]
             m_coef = months_for_coef[idx][i]
             print(idx, m)
             # Fix 2: Prefer thermodynamic PI fields over empirical MPI
             pi_path = os.path.join(__location__, f"Monthly_mean_PI_{m}.txt")
-            mpi_path = os.path.join(__location__, "MPI_FIELDS_" + str(idx) + str(m) + ".txt")
+            mpi_path = os.path.join(
+                __location__, "MPI_FIELDS_" + str(idx) + str(m) + ".txt"
+            )
             if os.path.exists(pi_path):
-                # PI fields are global (same grid as SST/MSLP)
                 PI_GLOBAL = np.loadtxt(pi_path)
                 lat_0_pi = np.abs(lat - lat1).argmin()
                 lat_1_pi = np.abs(lat - lat0).argmin()
@@ -961,15 +1099,18 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
                             0.0, sub["Pressure"].values - sub["MPI"].values
                         )
                         try:
-                            theta, pred, resid, mu, std_neg, std_pos = _fit_pressure_model_siena(
-                                sub["DP0"].values,
-                                presmpi,
-                                sub["VWS"].values,
-                                sub["RH600"].values,
-                                sub["I_EN"].values,
-                                sub["I_LN"].values,
-                                sub["DP1"].values,
-                                lambda_phase=lambda_phase,
+                            # H1 FIX: use basin_lambda from CV (or fixed value)
+                            theta, pred, resid, mu, std_neg, std_pos = (
+                                _fit_pressure_model_siena(
+                                    sub["DP0"].values,
+                                    presmpi,
+                                    sub["VWS"].values,
+                                    sub["RH600"].values,
+                                    sub["I_EN"].values,
+                                    sub["I_LN"].values,
+                                    sub["DP1"].values,
+                                    lambda_phase=basin_lambda,
+                                )
                             )
                             a, b, c, d, c_vws, c_rh, c_en, c_ln = theta
                             if abs(mu) < 2 and c > 0 and d >= 0:
@@ -1098,3 +1239,7 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=5.0):
                     )
 
         np.save(os.path.join(__location__, "COEFFICIENTS_JM_PRESSURE.npy"), coeflist)
+
+    # Save lambda report for paper
+    np.save(os.path.join(__location__, "PRESSURE_LAMBDA_REPORT.npy"), lambda_report)
+    print("Pressure lambda report saved to PRESSURE_LAMBDA_REPORT.npy")
