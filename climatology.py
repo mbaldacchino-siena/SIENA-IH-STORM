@@ -168,6 +168,9 @@ def _download_monthly_mean_SST(dir_data, year_list):
 
 def _download_wind_shear_data(dir_data, year_list):
     out_path = op.join(dir_data, "Monthly_mean_VWS_components.nc")
+    # Save 850 hPa components for vorticity computation
+    u850_path = op.join(dir_data, "Monthly_mean_U850.nc")
+    v850_path = op.join(dir_data, "Monthly_mean_V850.nc")
 
     if not Path(out_path).is_file():
         c = cdsapi.Client()
@@ -198,6 +201,7 @@ def _download_wind_shear_data(dir_data, year_list):
             out_path,
         )
     my_file = op.join(dir_data, "Monthly_mean_VWS.nc")
+        
     if not Path(my_file).is_file():
         ds = xr.open_dataset(out_path)
         u_name = "u" if "u" in ds.data_vars else list(ds.data_vars)[0]
@@ -209,6 +213,8 @@ def _download_wind_shear_data(dir_data, year_list):
         v850 = ds[v_name].sel({level_name: 850})
         vws = np.sqrt((u200 - u850) ** 2 + (v200 - v850) ** 2)
         xr.Dataset({"vws": vws}).to_netcdf(my_file)
+        xr.Dataset({"v850": v850}).to_netcdf(v850_path)
+        xr.Dataset({"u850": u850}).to_netcdf(u850_path)
         ds.close()
 
 
@@ -337,6 +343,83 @@ def climatology_data(year):
     filtered_cyclones.to_netcdf(
         local_path + "/IBTrACS." + str(year[0]) + "_" + str(year[1]) + "v04r01.nc"
     )
+
+
+###########################################################
+#######    COMPUTE    VORTICITY    FOR GENESIS   PI
+###########################################################
+
+
+def _compute_and_save_vorticity(u850_path, v850_path, oni_df, out_dir):
+    """
+    Compute 850 hPa relative vorticity from u,v components.
+    Save pooled and phase-specific monthly climatologies.
+    """
+    ds_u = xr.open_dataset(u850_path)
+    ds_v = xr.open_dataset(v850_path)
+
+    time_dim = "valid_time" if "valid_time" in ds_u.dims else "time"
+    lat = ds_u.latitude.values  # degrees, typically 90 to -90
+    lon = ds_u.longitude.values
+
+    # Grid spacing in meters
+    R = 6.371e6  # Earth radius
+    dlat = np.abs(np.mean(np.diff(lat)))  # degrees
+    dlon = np.abs(np.mean(np.diff(lon)))  # degrees
+    dy = np.deg2rad(dlat) * R  # constant
+    # dx varies with latitude
+    dx = np.deg2rad(dlon) * R * np.cos(np.deg2rad(lat))  # (nlat,)
+
+    # Phase lookup
+    phase_lookup = {}
+    for _, row in oni_df.iterrows():
+        phase_lookup[(int(row["year"]), int(row["month"]))] = (
+            str(row["phase"]).strip().upper()
+        )
+
+    times = pd.to_datetime(ds_u[time_dim].values)
+    PHASES = ["LN", "NEU", "EN"]
+    accum = {m: {ph: [] for ph in PHASES} for m in range(1, 13)}
+    accum_pooled = {m: [] for m in range(1, 13)}
+
+    u_var = [v for v in ds_u.data_vars][0]
+    v_var = [v for v in ds_v.data_vars][0]
+
+    for t_idx in range(len(times)):
+        yr, mo = int(times[t_idx].year), int(times[t_idx].month)
+        ph = phase_lookup.get((yr, mo), "NEU")
+
+        u = ds_u[u_var].isel({time_dim: t_idx}).values  # (lat, lon)
+        v = ds_v[v_var].isel({time_dim: t_idx}).values
+
+        # Relative vorticity: ζ = ∂v/∂x − ∂u/∂y
+        # Central differences
+        dvdx = np.gradient(v, axis=1) / dx[:, None]  # (lat, lon)
+        dudy = np.gradient(u, axis=0) / dy  # (lat, lon)
+        vort = dvdx - dudy
+
+        accum[mo][ph].append(vort)
+        accum_pooled[mo].append(vort)
+
+    ds_u.close()
+    ds_v.close()
+
+    for m in range(1, 13):
+        if accum_pooled[m]:
+            pooled = np.nanmean(np.stack(accum_pooled[m]), axis=0)
+            np.savetxt(os.path.join(out_dir, f"Monthly_mean_VORT850_{m}.txt"), pooled)
+        for ph in PHASES:
+            if accum[m][ph]:
+                field = np.nanmean(np.stack(accum[m][ph]), axis=0)
+            elif m in accum_pooled and accum_pooled[m]:
+                field = pooled
+            else:
+                continue
+            np.savetxt(
+                os.path.join(out_dir, f"Monthly_mean_VORT850_{m}_{ph}.txt"), field
+            )
+
+    print("Vorticity climatologies complete.")
 
 
 # ==========================
@@ -502,4 +585,13 @@ def build_pooled_and_phase_climatologies(
         )
         print("PI done")
 
+    # Compute 850 hPa relative vorticity from u,v
+
+    u850_path = op.join(local_path, "Monthly_mean_U850.nc")
+    v850_path = op.join(local_path, "Monthly_mean_V850.nc")
+    if op.exists(u850_path) and op.exists(v850_path):
+        _compute_and_save_vorticity(u850_path, v850_path, climate_df, local_path)
+        print("850hPa Vorticity done")
+
     return climate_df
+
