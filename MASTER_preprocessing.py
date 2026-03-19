@@ -34,6 +34,7 @@ __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file
     months_for_coef_MPI,
     months_for_coef_PRESS,
     generation_phase,
+    genesis_weighting,
 ) = import_data.input_data("input.dat")
 
 TC_file = "IBTrACS." + str(period[0]) + "_" + str(period[1]) + "v04r01.nc"
@@ -164,7 +165,7 @@ environmental.pressure_coefficients(idx_basin, months, months_for_coef_PRESS)
 print("pressure_coefficients done")
 
 print("********************************")
-genesis_matrix.Change_genesis_locations(idx_basin, months)
+genesis_matrix.Change_genesis_locations(idx_basin, months, genesis_weighting)
 print("genesis_matrix done")
 
 print("********************************")

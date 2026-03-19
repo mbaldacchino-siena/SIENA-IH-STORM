@@ -11,7 +11,7 @@ import cartopy.io.shapereader as shpreader
 import shapely.geometry as sgeom
 from shapely.ops import unary_union
 from shapely.prepared import prep
-import pandas as pd 
+import pandas as pd
 from scipy.interpolate import griddata
 import matplotlib.pyplot as plt
 from siena_utils import load_monthly_field
@@ -241,7 +241,9 @@ def build_environmental_genesis_factor(basin, month, phase=None):
 
     # Load PI (thermodynamic or empirical)
     try:
-        pi_global = load_monthly_field(__location__, "Monthly_mean_PI", month, phase=phase_str)
+        pi_global = load_monthly_field(
+            __location__, "Monthly_mean_PI", month, phase=phase_str
+        )
         # Extract basin region — PI is on global SST grid (721 x 1440, 0.25deg)
         lat_grid = np.linspace(90, -90, pi_global.shape[0])
         lon_grid = np.linspace(0, 359.75, pi_global.shape[1])
@@ -251,7 +253,7 @@ def build_environmental_genesis_factor(basin, month, phase=None):
         lon_1i = np.abs(lon_grid - lon1).argmin()
         pi_basin = pi_global[lat_0i:lat_1i, lon_0i:lon_1i]
         # Resample to 1-degree grid
-        
+
         if pi_basin.shape[0] > 0 and pi_basin.shape[1] > 0:
             zy = yg / pi_basin.shape[0]
             zx = xg / pi_basin.shape[1]
@@ -262,7 +264,9 @@ def build_environmental_genesis_factor(basin, month, phase=None):
 
     # Load VWS
     try:
-        vws_global = load_monthly_field(__location__, "Monthly_mean_VWS", month, phase=phase_str)
+        vws_global = load_monthly_field(
+            __location__, "Monthly_mean_VWS", month, phase=phase_str
+        )
         lat_grid = np.linspace(90, -90, vws_global.shape[0])
         lon_grid = np.linspace(0, 359.75, vws_global.shape[1])
         lat_0i = np.abs(lat_grid - lat1).argmin()
@@ -280,7 +284,9 @@ def build_environmental_genesis_factor(basin, month, phase=None):
 
     # Load RH600
     try:
-        rh_global = load_monthly_field(__location__, "Monthly_mean_RH600", month, phase=phase_str)
+        rh_global = load_monthly_field(
+            __location__, "Monthly_mean_RH600", month, phase=phase_str
+        )
         lat_grid = np.linspace(90, -90, rh_global.shape[0])
         lon_grid = np.linspace(0, 359.75, rh_global.shape[1])
         lat_0i = np.abs(lat_grid - lat1).argmin()
@@ -308,14 +314,14 @@ def build_environmental_genesis_factor(basin, month, phase=None):
         pi_field = np.nan_to_num(pi_field, nan=1020.0)
         pi_term = np.clip((1020.0 - pi_field) / 60.0, 0.0, 3.0)
         # Ensure shape match
-        pi_term = pi_term[:env.shape[0], :env.shape[1]]
-        env[:pi_term.shape[0], :pi_term.shape[1]] *= pi_term
+        pi_term = pi_term[: env.shape[0], : env.shape[1]]
+        env[: pi_term.shape[0], : pi_term.shape[1]] *= pi_term
 
     if vws_field is not None:
         vws_field = np.nan_to_num(vws_field, nan=15.0)
         vws_term = np.exp(-0.10 * np.maximum(vws_field, 0.0))
-        vws_term = vws_term[:env.shape[0], :env.shape[1]]
-        env[:vws_term.shape[0], :vws_term.shape[1]] *= vws_term
+        vws_term = vws_term[: env.shape[0], : env.shape[1]]
+        env[: vws_term.shape[0], : vws_term.shape[1]] *= vws_term
 
     if rh_field is not None:
         rh_field = np.nan_to_num(rh_field, nan=50.0)
@@ -323,8 +329,8 @@ def build_environmental_genesis_factor(basin, month, phase=None):
         if np.nanmax(rh_field) < 2.0:
             rh_field = rh_field * 100.0
         rh_term = np.clip(rh_field / 60.0, 0.2, 2.5)
-        rh_term = rh_term[:env.shape[0], :env.shape[1]]
-        env[:rh_term.shape[0], :rh_term.shape[1]] *= rh_term
+        rh_term = rh_term[: env.shape[0], : env.shape[1]]
+        env[: rh_term.shape[0], : rh_term.shape[1]] *= rh_term
 
     env = np.nan_to_num(env, nan=0.0, posinf=0.0, neginf=0.0)
     env[env < 0] = 0.0
@@ -425,7 +431,7 @@ def _blend_genesis_with_env(genesis, env, label=""):
     return result
 
 
-def Change_genesis_locations(idx_basin, months):
+def Change_genesis_locations(idx_basin, months, genesis_weighting):
 
     basin_name = ["EP", "NA", "NI", "SI", "SP", "WP"]
     monthsall = {
@@ -436,7 +442,7 @@ def Change_genesis_locations(idx_basin, months):
         "SP": months[4],
         "WP": months[5],
     }
-    genesis_mode = os.environ.get("genesis_weighting", "EMPIRICAL").upper()
+    genesis_mode = genesis_weighting
 
     locations = np.load(
         os.path.join(__location__, "GEN_LOC.npy"), allow_pickle=True, encoding="latin1"
@@ -581,9 +587,9 @@ def compute_gpi_field(basin, month, phase=None):
         Returns a 1-degree grid matching the basin dimensions, or None
         if required fields are missing.
 
-    *Emanuel, K. A., & Nolan, D. S. (2004). Tropical cyclone activity and the global climate system. 
+    *Emanuel, K. A., & Nolan, D. S. (2004). Tropical cyclone activity and the global climate system.
         Preprints, 26th Conf. on Hurricanes and Tropical Meteorology, Miami, FL, Amer. Meteor. Soc., 240–241.
-    *Camargo, S. J., Emanuel, K. A., & Sobel, A. H. (2007). Use of a Genesis Potential Index to Diagnose 
+    *Camargo, S. J., Emanuel, K. A., & Sobel, A. H. (2007). Use of a Genesis Potential Index to Diagnose
         ENSO Effects on Tropical Cyclone Genesis. J. Climate, 20, 4819–4834. doi:10.1175/JCLI4282.1
     *Tippett, M. K., Camargo, S. J., & Sobel, A. H. (2011). A Poisson Regression Index for Tropical Cyclone
       Genesis and the Role of Large-Scale Vorticity in Genesis. J. Climate, 24, 2335–2357.

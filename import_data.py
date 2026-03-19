@@ -21,22 +21,38 @@ def _parse_value(value):
 
 def input_data(file):
     variables = {}
-    with open(file, 'r', encoding='utf-8') as fh:
+    with open(file, "r", encoding="utf-8") as fh:
         for raw in fh:
             raw = raw.strip()
-            if not raw or raw.startswith('#') or '=' not in raw:
+            if not raw or raw.startswith("#") or "=" not in raw:
                 continue
-            key, value = raw.split('=', 1)
+            key, value = raw.split("=", 1)
             variables[key.strip()] = _parse_value(value)
 
-    period = list(map(int, variables.get('period', [1980, 2021])))
-    climate_index = str(variables.get('climate_index', 'ONI')).strip("'")
-    threshold = float(variables.get('threshold', 0.5))
-    idx_basin = list(map(int, variables.get('idx_basin', [0, 1, 2, 3, 4, 5])))
-    months = [list(map(int, m)) for m in variables.get('months', [])]
-    mpi_bounds = [list(map(int, b)) for b in variables.get('mpi_bounds', [])]
-    months_for_coef_MPI = [list(map(int, b)) for b in variables.get('months_for_coef_MPI', mpi_bounds)]
-    months_for_coef_PRESS = [list(map(int, b)) for b in variables.get('months_for_coef_PRESS', mpi_bounds)]
-    generation_phase = variables.get('generation_phase', 'NEU')
+    period = list(map(int, variables.get("period", [1980, 2021])))
+    climate_index = str(variables.get("climate_index", "ONI")).strip("'")
+    threshold = float(variables.get("threshold", 0.5))
+    idx_basin = list(map(int, variables.get("idx_basin", [0, 1, 2, 3, 4, 5])))
+    months = [list(map(int, m)) for m in variables.get("months", [])]
+    mpi_bounds = [list(map(int, b)) for b in variables.get("mpi_bounds", [])]
+    months_for_coef_MPI = [
+        list(map(int, b)) for b in variables.get("months_for_coef_MPI", mpi_bounds)
+    ]
+    months_for_coef_PRESS = [
+        list(map(int, b)) for b in variables.get("months_for_coef_PRESS", mpi_bounds)
+    ]
+    generation_phase = variables.get("generation_phase", "NEU")
+    genesis_weighting = variables.get("genesis_weighting", "EMPIRICAL")
 
-    return period, climate_index, threshold, idx_basin, months, mpi_bounds, months_for_coef_MPI, months_for_coef_PRESS, generation_phase
+    return (
+        period,
+        climate_index,
+        threshold,
+        idx_basin,
+        months,
+        mpi_bounds,
+        months_for_coef_MPI,
+        months_for_coef_PRESS,
+        generation_phase,
+        genesis_weighting,
+    )
