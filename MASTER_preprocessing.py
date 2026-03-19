@@ -19,6 +19,7 @@ import environmental
 import genesis_matrix
 import import_data
 from siena_utils import load_climate_index_table, count_phase_months
+from validate_twopn import validate_residuals
 
 dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
@@ -164,3 +165,7 @@ print("pressure_coefficients done")
 print("********************************")
 genesis_matrix.Change_genesis_locations(idx_basin, months)
 print("genesis_matrix done")
+
+print("********************************")
+validate_residuals()
+print("residuals validated")
