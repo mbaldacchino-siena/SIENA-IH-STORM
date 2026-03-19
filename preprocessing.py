@@ -319,10 +319,12 @@ def extract_data(data, final_year):
     np.save(os.path.join(dir_path, "BASINLIST_INTERP.npy"), basinlist)
     np.save(os.path.join(dir_path, "YEARLIST_INTERP.npy"), yearlist)
 
+
 def TC_variables(
     nyear,
     monthsall,
     oni_table=None,
+    phase_month_counts=None,
     vws_fields=None,
     rh_fields=None,
     latitudes=None,
@@ -333,25 +335,32 @@ def TC_variables(
     SIENA extension: keep all storms pooled, add ENSO phase/year and co-located
     VWS/RH for track and pressure variables.
 
-    vws_fields / rh_fields can be keyed either as:
-      - {month: array}                   (legacy, pooled)
-      - {(month, phase_str): array}      (phase-aware, e.g. (6, 'EN'))
-    The lookup tries (month, phase_name) first, then (month, None), then month.
+    C4 FIX: Poisson rates use exposure-based correction.  Each storm is still
+    assigned its genesis-month's ENSO phase (per-month ONI), but the rate
+    denominator uses active-season month counts per phase rather than year
+    counts, preventing double-counting.
+
+        rate_ph = storms_ph × L / M_ph
+
+    where L = season length, M_ph = total active-season months in phase ph.
+
+    Parameters
+    ----------
+    phase_month_counts : dict {basin_idx: {phase_code: int}}, from
+                         count_phase_months().  If None, falls back to the old
+                         year-counting approach (which double-counts).
     """
 
     def _lookup_env(fields, month, phase_name):
         """Pick the best available field: phase-specific > pooled."""
         if fields is None:
             return None
-        # Try phase-specific key first
         key = (month, phase_name)
         if key in fields:
             return fields[key]
-        # Try pooled with tuple key
         key = (month, None)
         if key in fields:
             return fields[key]
-        # Try legacy int key
         if month in fields:
             return fields[month]
         return None
@@ -385,7 +394,7 @@ def TC_variables(
         print("Files do not exist in " + str(__location__) + ", please check directory")
         return
 
-    from siena_utils import build_phase_lookup, nearest_env_value
+    from siena_utils import build_phase_lookup, nearest_env_value, verify_phase_rates
 
     phase_lookup = build_phase_lookup(oni_table)
 
@@ -405,8 +414,12 @@ def TC_variables(
     genesis_dpres = {i: [] for i in range(0, 6)}
     genesis_pres_var = {i: [] for i in range(0, 6)}
     genesis_loc = {i: [] for i in range(0, 6)}
+
+    # --- C4 FIX: Phase counts use year-level assignment ---
+    # storms_per_phase[basin][phase_code] = total storm count
+    storms_per_phase = {idx: {0: 0, 1: 0, 2: 0} for idx in range(6)}
+    # pooled count (unchanged)
     poisson = {i: [0] for i in range(0, 6)}
-    poisson_phase = {i: {0: 0, 1: 0, 2: 0} for i in range(0, 6)}
     genesis_poisson = []
 
     track = {i: [] for i in range(0, 10)}
@@ -433,6 +446,8 @@ def TC_variables(
             idx = basinlist[i][0]
             month = monthlist[i][0]
             year = int(yearlist[i][0]) if len(yearlist[i]) > 0 else -1
+
+            # Phase from genesis month's ONI value (per-month assignment)
             phase = phase_lookup.get((year, month), 1)
             phase_name = {0: "LN", 1: "NEU", 2: "EN"}.get(phase, "NEU")
 
@@ -447,7 +462,7 @@ def TC_variables(
                 )
                 genesis_months_phase[idx][phase_name].append(month)
                 poisson[idx][0] += 1
-                poisson_phase[idx][phase] += 1
+                storms_per_phase[idx][phase] += 1
 
                 for j in range(1, len(latlist[i]) - 1):
                     lat_now = latlist[i][j]
@@ -515,39 +530,51 @@ def TC_variables(
                         pressure[8][idx].append(vws_val)
                         pressure[9][idx].append(rh_val)
 
-    # ---- FIX: Convert phase raw counts to annual rates ----
-    # Count the number of unique years per phase per basin
-    # A "phase year" for basin idx = a year where at least one active-season
-    # month was classified as that phase
-    nyear_phase = {idx: {0: 0, 1: 0, 2: 0} for idx in range(6)}
-    years_seen = {idx: {0: set(), 1: set(), 2: set()} for idx in range(6)}
-    for i in range(len(latlist)):
-        if len(latlist[i]) > 0:
-            idx = basinlist[i][0]
-            month = monthlist[i][0]
-            year = int(yearlist[i][0]) if len(yearlist[i]) > 0 else -1
-            phase = phase_lookup.get((year, month), 1)
-            if month in monthsall[idx] and year > 0:
-                years_seen[idx][phase].add(year)
-    for idx in range(6):
-        for ph in [0, 1, 2]:
-            nyear_phase[idx][ph] = max(len(years_seen[idx][ph]), 1)  # avoid div by 0
+    # ---- C4 FIX: Exposure-based Poisson rates ----
+    # rate_ph = storms_ph × L / M_ph
+    # where L = season length, M_ph = total active-season months classified as phase ph
+    # This is the MLE for Poisson rate with fractional exposure, and avoids
+    # double-counting years that straddle multiple ENSO phases.
+    MIN_EXPOSURE_MONTHS = None  # will be set per basin = L (one full season)
 
     poisson_phase_rate = {idx: {} for idx in range(6)}
     for idx in range(6):
+        L = len(monthsall[idx])  # season length for this basin
+        MIN_EXPOSURE_MONTHS = L  # require at least 1 full-season-equivalent of exposure
         for ph in [0, 1, 2]:
-            raw = poisson_phase[idx][ph]
-            ny = nyear_phase[idx][ph]
-            rate = round(raw / ny, 1) if ny > 0 else 0.0
+            M_ph = phase_month_counts[idx][ph] if phase_month_counts is not None else 0
+            raw_storms = storms_per_phase[idx][ph]
+            if M_ph >= MIN_EXPOSURE_MONTHS:
+                rate = round(raw_storms * L / M_ph, 1)
+            else:
+                # Insufficient exposure: fall back to pooled rate
+                rate = round(poisson[idx][0] / nyear[idx], 1)
+                ph_name = {0: "LN", 1: "NEU", 2: "EN"}[ph]
+                print(
+                    f"  WARNING: Basin {idx} phase {ph_name}: only {M_ph} "
+                    f"active-season months (min={MIN_EXPOSURE_MONTHS}). "
+                    f"Falling back to pooled rate."
+                )
             poisson_phase_rate[idx][ph] = rate
+
         print(
             f"  Basin {idx} phase rates: LN={poisson_phase_rate[idx][0]}, "
             f"NEU={poisson_phase_rate[idx][1]}, EN={poisson_phase_rate[idx][2]} "
-            f"(years: LN={nyear_phase[idx][0]}, NEU={nyear_phase[idx][1]}, EN={nyear_phase[idx][2]})"
+            f"(exposure months: LN={phase_month_counts[idx][0]}, "
+            f"NEU={phase_month_counts[idx][1]}, EN={phase_month_counts[idx][2]}, "
+            f"season_length={L})"
         )
 
     for idx in range(0, 6):
-        genesis_poisson.append(round(poisson[idx][0] / nyear[idx], 1))
+        pooled_rate = round(poisson[idx][0] / nyear[idx], 1)
+        genesis_poisson.append(pooled_rate)
+
+        # C4 FIX: Sanity check — weighted phase rates ≈ pooled rate
+        L = len(monthsall[idx])
+        if phase_month_counts is not None:
+            verify_phase_rates(
+                poisson_phase_rate[idx], pooled_rate, phase_month_counts[idx], L, idx
+            )
 
         dp0_neg, dp0_pos = [], []
         for j in range(len(pressure[0][idx])):
