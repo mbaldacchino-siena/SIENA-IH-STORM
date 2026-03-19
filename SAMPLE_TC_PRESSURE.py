@@ -34,50 +34,87 @@ def _sample_twopn(mu, std_neg, std_pos):
     The two-piece normal uses std_neg for the left half (intensification)
     and std_pos for the right half (weakening), capturing the asymmetry
     observed in TC pressure change residuals.
-    (John 1982, Commun. Stat. Theory Methods 11(8), 879-885)
+    (Kaplan & DeMaria 2003, doi:10.1175/1520-0434(2003)018<1093:LNARP>2.0.CO;2)
     """
-    # Guard against invalid sigma from unfilled coefficient cells (-100)
-    # or zero-variance fits (0.0)
-    MIN_SIGMA = 0.1  # minimum physical std for dp in hPa (prevents degenerate draws)
-    std_neg = max(abs(std_neg), MIN_SIGMA)
-    std_pos = max(abs(std_pos), MIN_SIGMA)
-
+    # Two-piece normal: sample from the appropriate half-normal
     u = np.random.random()
+    # Probability of drawing from the left half
     p_left = std_neg / (std_neg + std_pos)
     if u < p_left:
+        # Left half (intensification side, dp < mu)
         return mu - abs(np.random.normal(0, std_neg))
     else:
+        # Right half (weakening side, dp > mu)
         return mu + abs(np.random.normal(0, std_pos))
 
 
 def _sample_truncated_twopn(mu, std_neg, std_pos, lower, upper):
     """
-    Sample from a truncated two-piece normal distribution.
+     Sample from a truncated two-piece normal distribution.
 
-    Replaces the while-loop clipping that distorted the tails.
-    Uses scipy.stats.truncnorm for proper truncated sampling.
+     Replaces the while-loop clipping that distorted the tails.
+     Uses scipy.stats.truncnorm for proper truncated sampling.
+     Important: the predicted mean ``mu`` is not guaranteed to lie inside
+    ``[lower, upper]``. When that happens, one half of the two-piece normal has
+     empty support after truncation, so we must fall back to the feasible side
+     instead of calling ``truncnorm`` with invalid bounds.
     """
-    # Guard against invalid sigma from unfilled coefficient cells (-100)
-    # or zero-variance fits (0.0). abs() handles the -100 case,
-    # MIN_SIGMA handles the 0.0 case.
-    MIN_SIGMA = 0.1
-    std_neg = max(abs(std_neg), MIN_SIGMA)
-    std_pos = max(abs(std_pos), MIN_SIGMA)
+    # Choose which half to sample from
 
-    u = np.random.random()
+    lower = float(lower)
+    upper = float(upper)
+    if lower > upper:
+        lower, upper = upper, lower
+
+    if np.isclose(lower, upper):
+        return lower
+
+    if not np.isfinite(mu):
+        mu = 0.5 * (lower + upper)
+
+    sigma_floor = 1e-6
+    std_neg = (
+        float(std_neg) if np.isfinite(std_neg) and std_neg > sigma_floor else np.nan
+    )
+    std_pos = (
+        float(std_pos) if np.isfinite(std_pos) and std_pos > sigma_floor else np.nan
+    )
+
+    left_possible = (mu > lower) and np.isfinite(std_neg)
+    right_possible = (mu < upper) and np.isfinite(std_pos)
+
+    if not left_possible and not right_possible:
+        return float(np.clip(mu, lower, upper))
+
+    if left_possible and not right_possible:
+        sigma = std_neg
+        a_tn = (lower - mu) / sigma
+        b_tn = (upper - mu) / sigma
+        draw = truncnorm.rvs(a_tn, b_tn, loc=mu, scale=sigma)
+        return float(np.clip(draw, lower, upper))
+
+    if right_possible and not left_possible:
+        sigma = std_pos
+        a_tn = (lower - mu) / sigma
+        b_tn = (upper - mu) / sigma
+        draw = truncnorm.rvs(a_tn, b_tn, loc=mu, scale=sigma)
+        return float(np.clip(draw, lower, upper))
+
+    # Both halves are feasible: sample side in proportion to its scale.
     p_left = std_neg / (std_neg + std_pos)
-
-    if u < p_left:
+    if np.random.random() < p_left:
         sigma = std_neg
         a_tn = (lower - mu) / sigma
         b_tn = 0.0
-        draw = truncnorm.rvs(a_tn, b_tn, loc=mu, scale=sigma)
     else:
         sigma = std_pos
         a_tn = 0.0
         b_tn = (upper - mu) / sigma
-        draw = truncnorm.rvs(a_tn, b_tn, loc=mu, scale=sigma)
 
+    if not np.isfinite(a_tn) or not np.isfinite(b_tn) or not (a_tn < b_tn):
+        return float(np.clip(mu, lower, upper))
+
+    draw = truncnorm.rvs(a_tn, b_tn, loc=mu, scale=sigma)
     return float(np.clip(draw, lower, upper))
 
 
