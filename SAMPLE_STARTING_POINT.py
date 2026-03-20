@@ -29,13 +29,13 @@ def Check_if_landfall(lat, lon, basin, land_mask):
     return land_mask[y, x]
 
 
-def _build_weighted_index(grid_copy):
+def _build_weighted_index(grid_copy, round_coeff = 6):
     """
     Build the weighted sampling list from a genesis grid.
     Returns an empty list if the grid has no valid positive entries.
     """
     grid_copy = np.array(grid_copy)
-    grid_copy = np.round(grid_copy, 1)
+    grid_copy = np.round(grid_copy, round_coeff)
     ncols = len(grid_copy[0, :])
     weighted_list_index = []
     for i in range(len(grid_copy[:, 0])):
@@ -44,7 +44,7 @@ def _build_weighted_index(grid_copy):
             # ---- FIX: guard against NaN and negative values ----
             if not np.isfinite(cell) or cell <= 0:
                 continue
-            value = int(10 * cell)
+            value = int((10**round_coeff) * cell)
             if value > 0:
                 weighted_list_index.extend([i * (ncols - 1) + j] * value)
     return weighted_list_index, grid_copy
