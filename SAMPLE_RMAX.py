@@ -9,6 +9,9 @@ Sci Data 7, 40 (2020). https://doi.org/10.1038/s41597-020-0381-2
 This is the STORM module for the calculation of radius to maximum winds
 
 Copyright (C) 2020 Nadia Bloemendaal. All versions released under the GNU General Public License v3.0.
+
+Performance note (SIENA): RMAX_PRESSURE.npy loaded once into module-level
+cache. Was: loaded from disk on every Add_Rmax call (once per storm).
 """
 
 import numpy as np
@@ -17,6 +20,19 @@ import sys
 
 dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
+
+# Module-level cache: load RMAX_PRESSURE.npy once
+_RMAX_CACHE = None
+
+
+def _get_rmax_pres():
+    """Load Rmax pressure bins once, return cached dict."""
+    global _RMAX_CACHE
+    if _RMAX_CACHE is None:
+        _RMAX_CACHE = np.load(
+            os.path.join(__location__, "RMAX_PRESSURE.npy"), allow_pickle=True
+        ).item()
+    return _RMAX_CACHE
 
 
 def sample_rmax(p, rmax_pres):
@@ -30,9 +46,7 @@ def sample_rmax(p, rmax_pres):
 
 
 def Add_Rmax(pressure):
-    rmax_pres = np.load(
-        os.path.join(__location__, "RMAX_PRESSURE.npy"), allow_pickle=True
-    ).item()
+    rmax_pres = _get_rmax_pres()
 
     # sample rmax at genesis
     rmaxlist = []
