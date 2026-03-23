@@ -164,8 +164,20 @@ def main():
         # Sequential mode (useful for debugging)
         results = [worker_fn(job) for job in jobs]
     else:
+        # imap_unordered yields results as each job finishes, so you see
+        # progress immediately instead of waiting for ALL jobs to complete.
+        # pool.map blocked on the slowest worker — if one storm entered an
+        # infinite loop, no results were returned and no output was visible.
+        results = []
         with mp.Pool(processes=n_workers) as pool:
-            results = pool.map(worker_fn, jobs)
+            for i, result in enumerate(pool.imap_unordered(worker_fn, jobs)):
+                results.append(result)
+                elapsed_so_far = time.time() - start_time
+                print(
+                    f"  [{i + 1}/{len(jobs)} done] "
+                    f"{os.path.basename(result) if result else '(empty)'} "
+                    f"  ({elapsed_so_far / 60:.1f} min elapsed)"
+                )
 
     elapsed = time.time() - start_time
     print()
