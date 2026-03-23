@@ -108,6 +108,13 @@ _BASIN_IDX = {"EP": 0, "NA": 1, "NI": 2, "SI": 3, "SP": 4, "WP": 5}
 # ==========================================================================
 # SAMPLING FUNCTIONS (unchanged physics)
 # ==========================================================================
+def _safe_sigma(val, fallback=1.0):
+    """Sanitize a sigma value: must be finite and positive.
+    max(NaN, 0.1) returns NaN in Python — explicit check needed."""
+    val = float(val)
+    if not np.isfinite(val) or val <= 0:
+        return fallback
+    return val
 
 
 def _sample_twopn(mu, std_neg, std_pos):
@@ -115,9 +122,8 @@ def _sample_twopn(mu, std_neg, std_pos):
     Sample from a two-piece normal distribution.
     (John 1982, Commun. Stat. Theory Methods 11(8), 879-885)
     """
-    MIN_SIGMA = 0.1
-    std_neg = max(abs(std_neg), MIN_SIGMA)
-    std_pos = max(abs(std_pos), MIN_SIGMA)
+    std_neg = _safe_sigma(abs(std_neg))
+    std_pos = _safe_sigma(abs(std_pos))
 
     u = np.random.random()
     p_left = std_neg / (std_neg + std_pos)
@@ -132,26 +138,31 @@ def _sample_truncated_twopn(mu, std_neg, std_pos, lower, upper):
     Sample from a truncated two-piece normal distribution.
     Uses scipy.stats.truncnorm for proper truncated sampling.
     """
-    MIN_SIGMA = 0.1
-    std_neg = max(abs(std_neg), MIN_SIGMA)
-    std_pos = max(abs(std_pos), MIN_SIGMA)
+    std_neg = _safe_sigma(abs(std_neg))
+    std_pos = _safe_sigma(abs(std_pos))
+
+    if not np.isfinite(mu) or not np.isfinite(lower) or not np.isfinite(upper):
+        return float(np.clip(np.random.normal(0, 1.0), lower, upper))
+
+    mu_clamped = np.clip(mu, lower, upper)
 
     u = np.random.random()
     p_left = std_neg / (std_neg + std_pos)
 
     if u < p_left:
         sigma = std_neg
-        a_tn = (lower - mu) / sigma
+        a_tn = (lower - mu_clamped) / sigma
         b_tn = 0.0
-        draw = truncnorm.rvs(a_tn, b_tn, loc=mu, scale=sigma)
     else:
         sigma = std_pos
         a_tn = 0.0
-        b_tn = (upper - mu) / sigma
-        draw = truncnorm.rvs(a_tn, b_tn, loc=mu, scale=sigma)
+        b_tn = (upper - mu_clamped) / sigma
 
+    if a_tn >= b_tn:
+        return float(mu_clamped)
+
+    draw = truncnorm.rvs(a_tn, b_tn, loc=mu_clamped, scale=sigma)
     return float(np.clip(draw, lower, upper))
-
 
 # ==========================================================================
 # PHYSICS FUNCTIONS (unchanged)
