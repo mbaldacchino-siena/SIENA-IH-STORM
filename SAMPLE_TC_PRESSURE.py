@@ -413,6 +413,13 @@ def TC_pressure(
         vmax = 0
         count = 0
         p = np.nan
+        # FIX: Track consecutive genesis resets to detect infinite loops.
+        # The original code resets i=0 when p < p_threshold or isnan(p),
+        # which re-samples genesis at latfull[0]. If that location always
+        # produces bad pressure (e.g., low Penv + high sampled wind),
+        # the loop never terminates. Cap at MAX_GENESIS_RETRIES and skip.
+        _genesis_retries = 0
+        MAX_GENESIS_RETRIES = 25
 
         # OPTIMIZATION: Load environmental fields via cache.
         # Original called np.loadtxt per storm — now each unique
@@ -446,6 +453,11 @@ def TC_pressure(
 
             if lat0 <= lat <= lat1 and lon0 <= lon <= lon1:
                 if (p < p_threshold) | math.isnan(p):
+                    _genesis_retries += 1
+                    if _genesis_retries > MAX_GENESIS_RETRIES:
+                        # This storm's genesis location consistently produces
+                        # invalid pressure. Skip it rather than loop forever.
+                        break
                     i = 0
                     vmax = 0
 
@@ -463,6 +475,9 @@ def TC_pressure(
                     pressure_list.append(p)
                     wind_list.append(vmax)
                     i = i + 1
+                else:
+                    # Storm is progressing normally — reset the retry counter
+                    _genesis_retries = 0
 
                 if landfall == 1:
                     if (p < p_threshold) | math.isnan(p):
