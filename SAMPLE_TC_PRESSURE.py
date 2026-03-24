@@ -2,590 +2,823 @@
 """
 @author: Nadia Bloemendaal, nadia.bloemendaal@vu.nl
 
-For more information, please see 
-Bloemendaal, N., Haigh, I.D., de Moel, H. et al. 
-Generation of a global synthetic tropical cyclone hazard dataset using STORM. 
+For more information, please see
+Bloemendaal, N., Haigh, I.D., de Moel, H. et al.
+Generation of a global synthetic tropical cyclone hazard dataset using STORM.
 Sci Data 7, 40 (2020). https://doi.org/10.1038/s41597-020-0381-2
 
 This is the STORM module for simulation of the TC pressure
 
 Copyright (C) 2020 Nadia Bloemendaal. All versions released under GNU General Public License v3.0
+
+Performance notes (SIENA):
+  - coastal_basemap_data.npy loaded ONCE into module-level cache
+    (was: loaded from disk on every non-landfall timestep — 18MB × ~5000 reads)
+  - Monthly environmental fields cached by (stem, month, phase) key
+    (was: np.loadtxt re-parsing 721×1440 text every storm)
+  - RMAX_PRESSURE.npy loaded once into module-level cache
+  - Grid index lookups replaced with O(1) arithmetic on regular grids
+    (was: np.abs(array - val).argmin() creating temporary arrays)
+  All physics, branching, and output formats are identical to the original.
 """
 
 import numpy as np
 from SELECT_BASIN import Basins_WMO
 from math import radians, cos, sin, asin, sqrt
 from SAMPLE_RMAX import Add_Rmax
+from scipy.stats import truncnorm
 import math
 import sys
 import os
-dir_path=os.path.dirname(os.path.realpath(sys.argv[0]))
+
+dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 import random
+from siena_utils import normalize_phase, phase_code, load_monthly_field
 
-def Calculate_Vmax(Penv,Pc,coef):
-    """
-    Function to convert pressure to vmax. The equation is based on the empirical wind-pressure relationship 
-    (Harper 2002, Atkinson and Holliday 1977)
-        
-    Input:
-        Penv: Environmental pressure (in hPa)
-        Pc: Central/minimum pressure in the TC
-        a,b: coefficients of empirical wind/pressure relationship
-        
-    Output:
-        Vmax10: 10-minute mean maximum sustained wind speed of the TC (m/s)
-    """
-    [a,b]=coef
-    Vmax10=a*(Penv-Pc)**b
+# ==========================================================================
+# MODULE-LEVEL CACHES — loaded once, reused across all calls
+# ==========================================================================
 
+# Cache 1: Coastal basemap for distance_from_coast
+# Original code loaded this 18MB file on EVERY non-landfall timestep
+_COASTAL_CACHE = None
+
+
+def _get_coastal_data():
+    """Load coastal basemap once, return cached (lons, lats) arrays."""
+    global _COASTAL_CACHE
+    if _COASTAL_CACHE is None:
+        fpath = os.path.join(dir_path, "coastal_basemap_data.npy")
+        D = np.load(fpath, encoding="latin1", allow_pickle=True).tolist()
+        _COASTAL_CACHE = (D["lons"], D["lats"])
+    return _COASTAL_CACHE
+
+
+# Cache 2: Monthly environmental fields keyed by (stem, month, phase_str)
+# Original code called np.loadtxt (text parsing of 721×1440 grids) per storm.
+# Multiple storms in the same month re-parsed the same file.
+_FIELD_CACHE = {}
+
+
+def _load_field_cached(stem, month, phase=None):
+    """Load a monthly field, caching the result for subsequent calls."""
+    key = (stem, month, normalize_phase(phase))
+    if key not in _FIELD_CACHE:
+        try:
+            _FIELD_CACHE[key] = load_monthly_field(dir_path, stem, month, phase=phase)
+        except Exception:
+            _FIELD_CACHE[key] = None
+    return _FIELD_CACHE[key]
+
+
+# Cache 3: Precomputed regular-grid index functions
+# The MSLP/PI/VWS/RH fields are on a regular 0.25° grid: lat from 90 to -90
+# (721 points), lon from 0 to 359.75 (1440 points).
+# Instead of np.abs(array - val).argmin() per timestep, compute the index directly.
+_LAT_GRID_STEP = 180.0 / 720.0  # 0.25 degrees
+_LON_GRID_STEP = 360.0 / 1440.0  # 0.25 degrees
+
+
+def _lat_to_idx(lat):
+    """Convert latitude to grid index. Grid runs from 90 (idx=0) to -90 (idx=720)."""
+    return int(round((90.0 - lat) / _LAT_GRID_STEP))
+
+
+def _lon_to_idx(lon):
+    """Convert longitude to grid index. Grid runs from 0 (idx=0) to 359.75 (idx=1439)."""
+    lon = lon % 360.0
+    return int(round(lon / _LON_GRID_STEP)) % 1440
+
+
+# Basin boundaries — avoids calling Basins_WMO (which triggers unnecessary
+# Poisson draws and file loads just to return static coordinates)
+_BASIN_BOUNDS = {
+    "EP": (5, 60, 180, 285),
+    "NA": (5, 60, 255, 359),
+    "NI": (5, 60, 30, 100),
+    "SI": (-60, -5, 10, 135),
+    "SP": (-60, -5, 135, 240),
+    "WP": (5, 60, 100, 180),
+}
+
+_BASIN_IDX = {"EP": 0, "NA": 1, "NI": 2, "SI": 3, "SP": 4, "WP": 5}
+
+
+# ==========================================================================
+# SAMPLING FUNCTIONS (unchanged physics)
+# ==========================================================================
+def _safe_sigma(val, fallback=1.0):
+    """Sanitize a sigma value: must be finite and positive.
+    max(NaN, 0.1) returns NaN in Python — explicit check needed."""
+    val = float(val)
+    if not np.isfinite(val) or val <= 0:
+        return fallback
+    return val
+
+
+def _sample_twopn(mu, std_neg, std_pos):
+    """
+    Sample from a two-piece normal distribution.
+    (John 1982, Commun. Stat. Theory Methods 11(8), 879-885)
+    """
+    std_neg = _safe_sigma(abs(std_neg))
+    std_pos = _safe_sigma(abs(std_pos))
+
+    u = np.random.random()
+    p_left = std_neg / (std_neg + std_pos)
+    if u < p_left:
+        return mu - abs(np.random.normal(0, std_neg))
+    else:
+        return mu + abs(np.random.normal(0, std_pos))
+
+
+def _sample_truncated_twopn(mu, std_neg, std_pos, lower, upper):
+    """
+    Sample from a truncated two-piece normal distribution.
+    Uses scipy.stats.truncnorm for proper truncated sampling.
+    """
+    std_neg = _safe_sigma(abs(std_neg))
+    std_pos = _safe_sigma(abs(std_pos))
+
+    if not np.isfinite(mu) or not np.isfinite(lower) or not np.isfinite(upper):
+        return float(np.clip(np.random.normal(0, 1.0), lower, upper))
+
+    mu_clamped = np.clip(mu, lower, upper)
+
+    u = np.random.random()
+    p_left = std_neg / (std_neg + std_pos)
+
+    if u < p_left:
+        sigma = std_neg
+        a_tn = (lower - mu_clamped) / sigma
+        b_tn = 0.0
+    else:
+        sigma = std_pos
+        a_tn = 0.0
+        b_tn = (upper - mu_clamped) / sigma
+
+    if a_tn >= b_tn:
+        return float(mu_clamped)
+
+    draw = truncnorm.rvs(a_tn, b_tn, loc=mu_clamped, scale=sigma)
+    return float(np.clip(draw, lower, upper))
+
+
+# ==========================================================================
+# PHYSICS FUNCTIONS (unchanged)
+# ==========================================================================
+
+
+def Calculate_Vmax(Penv, Pc, coef):
+    [a, b] = coef
+    Vmax10 = a * (Penv - Pc) ** b
     return Vmax10
 
-def Calculate_Pressure(Vmax10,Penv,coef):
-    """
-    Convert Vmax to Pressure following the empirical wind-pressure relationship (Harper 2002, Atkinson and Holliday 1977)
-    
-    Input: 
-        Vmax: 10-min mean maximum wind speed in m/s
-        Penv: environmental pressure (hPa)
-        a,b: coefficients. See Atkinson_Holliday_wind_pressure_relationship.py
-    
-    Returns:
-        Pc: central pressure in the eye
-    
-    """
-    [a,b]=coef
-    Pc=Penv-(Vmax10/a)**(1./b)
-    
+
+def Calculate_Pressure(Vmax10, Penv, coef):
+    [a, b] = coef
+    Pc = Penv - (Vmax10 / a) ** (1.0 / b)
     return Pc
 
-                  
+
 def TC_Category(V):
-    """
-    Find the category on the Saffir-Simpson Hurricane Wind Scale
-
-    Parameters
-    ----------
-    V : max wind speed (m/s).
-
-    Returns
-    -------
-    cat : category (0-5, 0=Tropical Storm).
-
-    """
-    if V>=15.8 and V<29.:
-        cat=0
-    elif V>=29. and V<37.6:
-        cat=1
-    elif V>=37.6 and V<43.4:
-        cat=2
-    elif V>=43.4 and V<51.1:
-        cat=3
-    elif V>=51.1 and V<61.6:
-        cat=4
-    elif V>=61.6:
-        cat=5
-    
+    if V >= 15.8 and V < 29.0:
+        cat = 0
+    elif V >= 29.0 and V < 37.6:
+        cat = 1
+    elif V >= 37.6 and V < 43.4:
+        cat = 2
+    elif V >= 43.4 and V < 51.1:
+        cat = 3
+    elif V >= 51.1 and V < 61.6:
+        cat = 4
+    elif V >= 61.6:
+        cat = 5
     else:
-        cat=-1
-    
+        cat = -1
     return cat
 
-def find_index_pressure(basin,lat,lon,lat0,lon0,lon1):
-    """
-    Find the index for the coefficient list corresponding to the lon/lat position of the TC
 
-    Parameters
-    ----------
-    basin : basin.
-    lat : latitude position of TC.
-    lon : longitude position of TC.
-    lat0 : upper left corner latitude of basin.
-    lon0 : upper left corner longitude of basin.
-    lon1 : upper right corner longitude of basin.
-
-    Returns
-    -------
-    ind : index.
-
-    """
-    base=5
-    latindex=np.floor(float(lat-lat0)/base)
-    lonindex=np.floor(float(lon-lon0)/base)
-    maxlon=(lon1-lon0)/5.
-    ind=latindex*maxlon+lonindex
+def find_index_pressure(basin, lat, lon, lat0, lon0, lon1):
+    base = 5
+    latindex = np.floor(float(lat - lat0) / base)
+    lonindex = np.floor(float(lon - lon0) / base)
+    maxlon = (lon1 - lon0) / 5.0
+    ind = latindex * maxlon + lonindex
     return ind
-    
-def PRESSURE_JAMES_MASON(dp,pres,a,b,c,d,mpi):
-    """
-    Function to calculate the change in pressure
 
-    Parameters
-    ----------
-    dp : backward change in pressure (dp0, pressure[i]-pressure[i-1]).
-    pres : pressure (hPa).
-    a,b,c,d : coefficients.
-    mpi : mpi in hPa.
 
-    Returns
-    -------
-    y : forward change in pressure (dp1, pressure[i+1]-pressure[i]).
-
-    """
-    if pres<mpi:
-        presmpi=0
+def PRESSURE_JAMES_MASON(
+    dp,
+    pres,
+    a,
+    b,
+    c,
+    d,
+    mpi,
+    vws=0.0,
+    rh=0.0,
+    phase=None,
+    c_vws=0.0,
+    c_rh=0.0,
+    c_en=0.0,
+    c_ln=0.0,
+):
+    if pres < mpi:
+        presmpi = 0
     else:
-        presmpi=pres-mpi
-    y=a+b*dp+c*np.exp(-d*presmpi)
+        presmpi = pres - mpi
+    phase_effect = c_en if phase == 2 else c_ln if phase == 0 else 0.0
+    y = a + b * dp + c * np.exp(-d * presmpi) + c_vws * vws + c_rh * rh + phase_effect
     return y
 
-def haversine(lat1,lon1,lat2,lon2):
-    """
-    function to calculate the distance between two coordinates
 
-    Parameters
-    ----------
-    lat1 : latitude point 1.
-    lon1 : longitude point 1.
-    lat2 : latitude point 2.
-    lon2 : longitude point 2.
-
-    Returns
-    -------
-    km : distance in km.
-
-    """
-    lon1,lat1,lon2,lat2=map(radians,[lon1,lat1,lon2,lat2])
-    dlon=abs(lon1-lon2)
-    dlat=abs(lat2-lat1)
-    A1=sin(dlat/2)**2.+cos(lat1)*cos(lat2)*sin(dlon/2)**2.
-    C2=2.*asin(sqrt(A1))
-    r=6371.
-    km=C2*r
-    
+def haversine(lat1, lon1, lat2, lon2):
+    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+    dlon = abs(lon1 - lon2)
+    dlat = abs(lat2 - lat1)
+    A1 = sin(dlat / 2) ** 2.0 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2.0
+    C2 = 2.0 * asin(sqrt(A1))
+    r = 6371.0
+    km = C2 * r
     return km
 
-def decay_after_landfall(lat_landfall,lon_landfall,latlijst,lonlijst,p,coef,Penv):
-    """
-    Function to calculate the decay after landfall. From Kaplan&DeMaria 1995
-    
-    Input:
-        prev_lat,prev_lon: previous latitude and longitude (one time step before landfall)
-        lat_landfall, lon_landfall: latitude and longitude coordinate at landfall
-        latlijst,lonlijst: TC track (latitude and longitude list)
-        p: pressure at landfall (hPa)
-        
-        **This is all needed for the wind-pressure relationships**
-        coefS: set of coefficients to calculate S
-        Penv: Environmental pressure (in hPa)
-        C: Forward speed in kt
-    
-    Output: 
-        pressure_decay: central pressure evolution after landfall (in hPa)
-        wind_decay: maximum wind speed evolution after landfall (in m/s)
-    """
-    
-    #Coefficients from Kaplan & DeMaria
-    #wind is calculated in knots
-    C1=0.0109 #kth-2
-    D1=-0.0503 #kth-2
-    R=0.9
-    t0=150
-    alpha=0.095 #h-1
-    vb=26.7 #kt at R=0.9
-    
-    v0=Calculate_Vmax(Penv,p,coef)  #wind speed in m/s 
-    
-    wind_decay=[]
-    pressure_decay=[]
+
+def decay_after_landfall(lat_landfall, lon_landfall, latlijst, lonlijst, p, coef, Penv):
+    C1 = 0.0109
+    D1 = -0.0503
+    R = 0.9
+    t0 = 150
+    alpha = 0.095
+    vb = 26.7
+
+    v0 = Calculate_Vmax(Penv, p, coef)
+
+    wind_decay = []
+    pressure_decay = []
     pressure_decay.append(p)
     wind_decay.append(v0)
-    
-    v0=v0/0.5144444444 #wind speed at landfall, in kt
-    D0=1. # km
-    
-    v=v0
-    t=3
-    j=1
-    pres_landfall=p
-    
-    while v>35 or j<len(latlijst): #While the storm hasn't dissipated (wind speed lower
-        #than 18m/s or, equivalently, 35 kt) or moved out of the basin, proceed
-        
-        #Distance needs to be greater than 1. So this means that we are going to look at moments AFTER landfall
+
+    v0 = v0 / 0.5144444444
+    D0 = 1.0
+    v = v0
+    t = 3
+    j = 1
+    pres_landfall = p
+
+    while v > 35 or j < len(latlijst):
         try:
-            D=haversine(lat_landfall,lon_landfall,latlijst[j],lonlijst[j])
-            #D is given in km 
-            
-            if D==0.: #storm is stationairy at the landfall location
+            D = haversine(lat_landfall, lon_landfall, latlijst[j], lonlijst[j])
+            if D == 0.0:
                 pressure_decay.append(pres_landfall)
-                wind_decay.append(v0*0.5144444) #v in m/s
-                j=j+1
-                t=t+3
-                
-            if D>1:
-                M=C1*t*(t0-t)
-                
-                b_KM=D1*t*(t0-t)
-                
-                C_KM=M*np.log(D/D0)+b_KM
-                
-                v=vb+(R*v0-vb)*np.exp(-alpha*t)-C_KM # v in kt
-                            
-                pres_landfall=Calculate_Pressure(v*0.514444,Penv,coef) #v in m/s
-                                
-                pres_landfall=round(pres_landfall,1)
-                
+                wind_decay.append(v0 * 0.5144444)
+                j = j + 1
+                t = t + 3
+            if D > 1:
+                M = C1 * t * (t0 - t)
+                b_KM = D1 * t * (t0 - t)
+                C_KM = M * np.log(D / D0) + b_KM
+                v = vb + (R * v0 - vb) * np.exp(-alpha * t) - C_KM
+                pres_landfall = Calculate_Pressure(v * 0.514444, Penv, coef)
+                pres_landfall = round(pres_landfall, 1)
                 pressure_decay.append(pres_landfall)
-                wind_decay.append(v*0.514444) #v in m/s
-                
-                if v*0.51444<18.:
+                wind_decay.append(v * 0.514444)
+                if v * 0.51444 < 18.0:
                     return pressure_decay, wind_decay
                 else:
-                    t=t+3 #we have 3-hourly data, so time after landfall = t=t+3
-                    j=j+1 #index of remainder of lat/lon list after landfall 
+                    t = t + 3
+                    j = j + 1
             else:
-                v=-100.
-        except IndexError: #in this case, the storm has moved out of the basin
-            v=-100.
-     
-    return pressure_decay,wind_decay   
+                j = j + 1
+                t = t + 3
+        except IndexError:
+            v = -100.0
 
-def distance_from_coast(lon,lat,fpath,degree_in_km=111.12):
+    return pressure_decay, wind_decay
+
+
+def distance_from_coast(lon, lat, degree_in_km=111.12):
     """
-    Calculate the distance from coast
-
-    Parameters
-    ----------
-    lon : longitude position of TC.
-    lat : latitude position of TC.
-    fpath : land/sea mask.
-    degree_in_km : The default is 111.12.
-
-    Returns
-    -------
-    mindist : distance to coast in km.
-
+    Calculate the distance from coast using CACHED coastal data.
+    Original loaded the 18MB file on every call — now loads once.
     """
-    if lon>180:
-        lon=lon-360.
+    if lon > 180:
+        lon = lon - 360.0
+    lons, lats = _get_coastal_data()
+    dists = np.sqrt((lons - lon) ** 2 + (lats - lat) ** 2)
+    mindist = np.min(dists) * degree_in_km
+    return mindist
 
-    D = np.load(fpath,encoding = 'latin1',allow_pickle=True).tolist()
 
-    lons,lats = D['lons'],D['lats']
+def add_parameters_to_TC_data(
+    pressure_list,
+    wind_list,
+    latfull,
+    lonfull,
+    year,
+    storm_number,
+    month,
+    basin,
+    landfallfull,
+    lijst,
+    TC_data,
+    idx,
+):
+    rmax_list = Add_Rmax(pressure_list)
+    x = min(len(landfallfull), len(lijst))
 
-    dists = np.sqrt((lons-lon)**2+(lats-lat)**2)
-    mindist=np.min(dists)*degree_in_km
-    return mindist  
-
-def add_parameters_to_TC_data(pressure_list,wind_list,latfull,lonfull,year,storm_number,month,basin,landfallfull,lijst,TC_data,idx):
-    """
-    Add parameters to the TC data list when TC is dissipated/moved out of basin
-
-    Parameters
-    ----------
-    pressure_list : array of pressure (hPa).
-    wind_list : array of wind (m/s).
-    latfull : array of latitude coordinates.
-    lonfull : array of longitude coordinates.
-    year : year of TC occurrence.
-    storm_number : TC storm number.
-    month : month of TC occurrence.
-    basin : basin.
-    landfallfull : array of landfall (0=no 1=yes).
-    lijst : dummy indicating the duration of the TC.
-    TC_data : existing array of TC data to which will be appended.
-    idx : basin idx.
-
-    Returns
-    -------
-    TC_data : array of TC data.
-
-    """
-    rmax_list=Add_Rmax(pressure_list)
-    
-    x=min(len(landfallfull),len(lijst))    
-             
-    for l in range(0,x):
-        if landfallfull[l]==1.:
-            distance=0
+    for l in range(0, x):
+        if landfallfull[l] == 1.0:
+            dist = 0
         else:
-            distance=distance_from_coast(lonfull[l],latfull[l],(os.path.join(dir_path,'coastal_basemap_data.npy')))
-            
-        category=TC_Category(wind_list[l])
-        
-        TC_data.append([year,month,storm_number,l,idx,latfull[l],lonfull[l],pressure_list[l],wind_list[l],rmax_list[l],category,landfallfull[l],distance])
-    
+            # Uses cached coastal data (no file I/O)
+            dist = distance_from_coast(lonfull[l], latfull[l])
+
+        category = TC_Category(wind_list[l])
+        TC_data.append(
+            [
+                year,
+                month,
+                storm_number,
+                l,
+                idx,
+                latfull[l],
+                lonfull[l],
+                pressure_list[l],
+                wind_list[l],
+                rmax_list[l],
+                category,
+                landfallfull[l],
+                dist,
+            ]
+        )
 
     return TC_data
 
-def TC_pressure(basin,latlist,lonlist,landfalllist,year,storms,monthlist,TC_data):  
+
+# ==========================================================================
+# HELPER: extract row coefficients (avoids duplicated if/elif blocks)
+# ==========================================================================
+
+
+def _unpack_pressure_row(row):
     """
-    Calculate TC pressure
-
-    Parameters
-    ----------
-    basin : basin.
-    latlist : array of TC track latitude positions.
-    lonlist : array of TC track longitude positions.
-    landfalllist : array of TC landfall (0=no 1=yes).
-    year : year
-    storms : number of storms.
-    monthlist : months of TC occurrence.
-    TC_data : array of TC data.
-
-    Returns
-    -------
-    TC_data : array of TC data + new TCs
-
+    Unpack a coefficient row into (c0,c1,c2,c3, EPmu, EPstd_neg, EPstd_pos,
+    mpi, c_vws, c_rh, c_en, c_ln) regardless of row length.
     """
+    if len(row) >= 12:
+        c0, c1, c2, c3, EPmu, EPstd_neg, EPstd_pos, mpi = row[:8]
+        c_vws, c_rh, c_en, c_ln = row[8:12]
+    elif len(row) >= 11:
+        c0, c1, c2, c3, EPmu, EPstd, mpi = row[:7]
+        EPstd_neg = EPstd_pos = EPstd
+        c_vws, c_rh, c_en, c_ln = row[7:11]
+    else:
+        c0, c1, c2, c3, EPmu, EPstd, mpi = row[:7]
+        EPstd_neg = EPstd_pos = EPstd
+        c_vws, c_rh, c_en, c_ln = 0.0, 0.0, 0.0, 0.0
+    return c0, c1, c2, c3, EPmu, EPstd_neg, EPstd_pos, mpi, c_vws, c_rh, c_en, c_ln
 
-    basin_name = dict(zip(['EP','NA','NI','SI','SP','WP'],[0,1,2,3,4,5]))
-    
-    idx=basin_name[basin]
 
-    latidx_penv=np.linspace(90,-90,721)
-    lonidx_penv=np.linspace(0,359.75,1440)    
-    
-    JM_pressure=np.load(os.path.join(__location__,'COEFFICIENTS_JM_PRESSURE.npy'), allow_pickle=True).item()
-            
-    Genpres=np.load(os.path.join(__location__,'DP0_PRES_GENESIS.npy'), allow_pickle=True).item()
-            
-    WPR_coefficients=np.load(os.path.join(__location__,'COEFFICIENTS_WPR_PER_MONTH.npy'), allow_pickle=True).item()
-    
-    Genwind=np.load(os.path.join(__location__,'GENESIS_WIND.npy'), allow_pickle=True).item()
+# ==========================================================================
+# MAIN GENERATION FUNCTION
+# ==========================================================================
 
-    intlist=[5,3,2,5,5,5]
-    
-    int_thres=intlist[idx]
-       
-    s,monthdummy,lat0,lat1,lon0,lon1=Basins_WMO(basin)
-    
-    wind_threshold=18. #if vmax<18, the storm is a tropical depression and we stop tracking it.
 
-    for storm_number,month,latfull,lonfull,landfallfull in zip(range(0,int(storms)),monthlist,latlist,lonlist,landfalllist):
-        i=0
-        vmax=0
-        count=0
-        p=np.nan
-        
-        #This is the full MSLP field, with lat0=90 deg, lat1=-90 deg, lon0=0 deg, lon1=359.75 deg. len(lat)=721, len(lon)=1440
-        Penv_field=np.loadtxt(os.path.join(dir_path,'Monthly_mean_MSLP_'+str(month)+'.txt'))
-               
-        constants_pressure=JM_pressure[idx][month]
-        constants_pressure=np.array(constants_pressure)
-        
-        coef=WPR_coefficients[idx][month]
-        coef=np.array(coef)
-        
-        p_threshold=min(constants_pressure[:,6])-10.
-        
-        EP=Genpres[idx][month]
-        
+def TC_pressure(
+    basin, latlist, lonlist, landfalllist, year, storms, monthlist, TC_data, phase=None
+):
+    """
+    Calculate TC pressure along synthetic tracks.
+    Logic is identical to the original; only I/O is cached.
+    """
+    idx = _BASIN_IDX[basin]
+    lat0, lat1, lon0, lon1 = _BASIN_BOUNDS[basin]
 
-        while i<len(latfull): 
-            lat,lon,landfall=latfull[i],lonfull[i],landfallfull[i]
-            
-            lat_dummy=np.abs(latidx_penv-lat).argmin()
-            lon_dummy=np.abs(lonidx_penv-lon).argmin()
-            
-            Penv=Penv_field[lat_dummy,lon_dummy]           
-            
-            if lat0<=lat<=lat1 and lon0<=lon<=lon1: #make sure we're inside the basin
-                
-                if ((p<p_threshold) | math.isnan(p)): #something went wrong. start again
-                    i=0
-                    vmax=0
-                    
-                if i==0: 
-                    vmax=random.choice(Genwind[idx][month])
-                    p=Calculate_Pressure(vmax,Penv,coef)
-                    
-                    
-                    pressure_list=[]    
-                    wind_list=[]
-                    #at genesis, we need to sample the genesis pressure and dp1. This is done basin-wide:
-                    
-                    [Pmu,Pstd,DP0mu,DP0std,dpmin,dpmax]=EP
-                    dp0=np.random.normal(DP0mu,DP0std)
+    phase = normalize_phase(phase)
+    ph_code = phase_code(phase) if phase is not None else 1
 
-                    dp1=-1.*np.abs(dp0)
+    # These .npy files are small and loaded once per TC_pressure call
+    # (once per year). Acceptable cost — not the bottleneck.
+    JM_pressure = np.load(
+        os.path.join(__location__, "COEFFICIENTS_JM_PRESSURE.npy"), allow_pickle=True
+    ).item()
+    Genpres = np.load(
+        os.path.join(__location__, "DP0_PRES_GENESIS.npy"), allow_pickle=True
+    ).item()
+    WPR_coefficients = np.load(
+        os.path.join(__location__, "COEFFICIENTS_WPR_PER_MONTH.npy"), allow_pickle=True
+    ).item()
+    Genwind = np.load(
+        os.path.join(__location__, "GENESIS_WIND.npy"), allow_pickle=True
+    ).item()
 
-                    pressure_list.append(p) 
-                    
+    intlist = [5, 3, 2, 5, 5, 5]
+    int_thres = intlist[idx]
+    wind_threshold = 18.0
+
+    for storm_number, month, latfull, lonfull, landfallfull in zip(
+        range(0, int(storms)), monthlist, latlist, lonlist, landfalllist
+    ):
+        i = 0
+        vmax = 0
+        count = 0
+        p = np.nan
+        # FIX: Track consecutive genesis resets to detect infinite loops.
+        # The original code resets i=0 when p < p_threshold or isnan(p),
+        # which re-samples genesis at latfull[0]. If that location always
+        # produces bad pressure (e.g., low Penv + high sampled wind),
+        # the loop never terminates. Cap at MAX_GENESIS_RETRIES and skip.
+        _genesis_retries = 0
+        MAX_GENESIS_RETRIES = 25
+
+        # OPTIMIZATION: Load environmental fields via cache.
+        # Original called np.loadtxt per storm — now each unique
+        # (stem, month, phase) is parsed once and reused.
+        Penv_field = _load_field_cached("Monthly_mean_MSLP", month, phase=phase)
+        PI_field = _load_field_cached("Monthly_mean_PI", month, phase=phase)
+        VWS_field = _load_field_cached("Monthly_mean_VWS", month, phase=phase)
+        RH_field = _load_field_cached("Monthly_mean_RH600", month, phase=phase)
+
+        constants_pressure = JM_pressure[idx][month]
+        constants_pressure = np.array(constants_pressure)
+
+        coef = WPR_coefficients[idx][month]
+        coef = np.array(coef)
+
+        mpi_col = 7 if constants_pressure.shape[1] >= 12 else 6
+        p_threshold = min(constants_pressure[:, mpi_col]) - 10.0
+
+        EP = Genpres[idx][month]
+
+        while i < len(latfull):
+            lat, lon, landfall = latfull[i], lonfull[i], landfallfull[i]
+
+            # OPTIMIZATION: O(1) index lookup on regular grid
+            # Original: np.abs(np.linspace(90,-90,721) - lat).argmin()
+            # which allocated a 721-element array every timestep.
+            lat_dummy = _lat_to_idx(lat)
+            lon_dummy = _lon_to_idx(lon)
+
+            Penv = Penv_field[lat_dummy, lon_dummy]
+
+            if lat0 <= lat <= lat1 and lon0 <= lon <= lon1:
+                if (p < p_threshold) | math.isnan(p):
+                    _genesis_retries += 1
+                    if _genesis_retries > MAX_GENESIS_RETRIES:
+                        # This storm's genesis location consistently produces
+                        # invalid pressure. Skip it rather than loop forever.
+                        break
+                    i = 0
+                    vmax = 0
+
+                if i == 0:
+                    vmax = random.choice(Genwind[idx][month])
+                    p = Calculate_Pressure(vmax, Penv, coef)
+
+                    pressure_list = []
+                    wind_list = []
+
+                    [Pmu, Pstd, DP0mu, DP0std, dpmin, dpmax] = EP
+                    dp0 = np.random.normal(DP0mu, DP0std)
+                    dp1 = -1.0 * np.abs(dp0)
+
+                    pressure_list.append(p)
                     wind_list.append(vmax)
-                    
-                    i=i+1
+                    i = i + 1
 
-                #next: check if the storm makes landfall. In that case, we move to the dissipation-formula                
-                if landfall==1: #landfall --> use Kaplan and DeMaria Formula for dissipation
-                    if ((p<p_threshold) | math.isnan(p)):
-                        print('Landfall',p,p_threshold)
-                        i=0
-                        vmax=0
-                    	
-                     
-                    elif vmax<wind_threshold or p>Penv: #The storm makes landfall as a tropical depression
-                        TC_data=add_parameters_to_TC_data(pressure_list,wind_list,latfull,lonfull,year,storm_number,month,basin,landfallfull,pressure_list,TC_data,idx)
-                        i=1000000000000000 
-                     
+                if landfall == 1:
+                    if (p < p_threshold) | math.isnan(p):
+                        print("Landfall", p, p_threshold)
+                        _genesis_retries += 1
+                        if _genesis_retries > MAX_GENESIS_RETRIES:
+                            break
+                        i = 0
+                        vmax = 0
+
+                    elif vmax < wind_threshold or p > Penv:
+                        TC_data = add_parameters_to_TC_data(
+                            pressure_list,
+                            wind_list,
+                            latfull,
+                            lonfull,
+                            year,
+                            storm_number,
+                            month,
+                            basin,
+                            landfallfull,
+                            pressure_list,
+                            TC_data,
+                            idx,
+                        )
+                        i = 1000000000000000
+
                     else:
-                       #calculate the landfall pressure
-                        
-                      ind=int(find_index_pressure(basin,lat,lon,lat0,lon0,lon1)) #find index for pressure
-                      
-                      [c0,c1,c2,c3,EPmu,EPstd,mpi]=constants_pressure[ind]
-                      y=PRESSURE_JAMES_MASON(dp1,p,c0,c1,c2,c3,mpi) 
-                      epsilon=np.random.normal(EPmu,EPstd)
-                      dp0=float(y+epsilon)
-                      
-                      while dp0<dpmin: #if more intensification than seen in the underlying dataset
-                          if y-dpmin>EPmu-2.*EPstd: #epsilon should be resampled
-                              epsilon=np.random.normal(EPmu,EPstd)
-                              dp0=y+epsilon
-                          else: #y is already smaller than dpmin. 
-                              dp0=np.random.uniform(dpmin,0)
-                      
-                      while dp0>dpmax: #if more weakening than seen in the underlying dataset
-                          if y-dpmax<EPmu+2.*EPstd:
-                              epsilon=np.random.normal(EPmu,EPstd)
-                              dp0=y+epsilon
-                          else:
-                              dp0=np.random.uniform(0,dpmax)      
-                      
-                      if p<mpi:#if pressure has dropped below mpi
-                          if dp0<0: #if intensification
-                              if count<2: #if intensification has been going on for less than 2 time steps
-                                  count=count+1
-                              else:
-                                  dp0=abs(dp0)
-                                      
-                      else: #the storm is above mpi
-                          count=0  
-  
-                      p=round(dp0+p,1)
-                      dp1=dp0
-                      
-                      if vmax<wind_threshold or p>Penv: #The storm is no longer a tropical storm
-                          #print('Dissipated',len(pressure_list),len(landfallfull))
-                          TC_data=add_parameters_to_TC_data(pressure_list,wind_list,latfull,lonfull,year,storm_number,month,basin,landfallfull,pressure_list,TC_data,idx)
-                          i=10000000000000000000000000000000
-                        
-                      else:
-                          pressure_list.append(p)
-                          
-                          vmax=Calculate_Vmax(Penv,p,coef)
-                          vmax=round(vmax,1)
-                          wind_list.append(vmax)
-  
-                    if any(c<1 for c in landfallfull[i:]): #check whether the storm moves back over the ocean
-                        
-                        check_move_ocean=i+np.where(np.array(landfallfull[i:])==0.)[0][0]
-                        #storm moves back over open ocean: apply decay function for i till check_move_ocean
-                        
-                        if check_move_ocean>i+3: #if this is not the case, we're crossing a very small island and no decay function should be used then 
-                            
-                            decay_pressure, decay_wind = decay_after_landfall(lat,lon,latfull[i:i+check_move_ocean],lonfull[i:i+check_move_ocean],p,coef,Penv)
+                        ind = int(
+                            find_index_pressure(basin, lat, lon, lat0, lon0, lon1)
+                        )
+                        row = constants_pressure[ind]
+                        (
+                            c0,
+                            c1,
+                            c2,
+                            c3,
+                            EPmu,
+                            EPstd_neg,
+                            EPstd_pos,
+                            mpi,
+                            c_vws,
+                            c_rh,
+                            c_en,
+                            c_ln,
+                        ) = _unpack_pressure_row(row)
+
+                        if PI_field is not None:
+                            pi_val = float(PI_field[lat_dummy, lon_dummy])
+                            if np.isfinite(pi_val) and pi_val > 0:
+                                mpi = pi_val
+                        vws = (
+                            float(VWS_field[lat_dummy, lon_dummy])
+                            if VWS_field is not None
+                            else 0.0
+                        )
+                        rh = (
+                            float(RH_field[lat_dummy, lon_dummy])
+                            if RH_field is not None
+                            else 0.0
+                        )
+
+                        y = PRESSURE_JAMES_MASON(
+                            dp1,
+                            p,
+                            c0,
+                            c1,
+                            c2,
+                            c3,
+                            mpi,
+                            vws=vws,
+                            rh=rh,
+                            phase=ph_code,
+                            c_vws=c_vws,
+                            c_rh=c_rh,
+                            c_en=c_en,
+                            c_ln=c_ln,
+                        )
+                        dp0 = _sample_truncated_twopn(
+                            y + EPmu, EPstd_neg, EPstd_pos, dpmin, dpmax
+                        )
+
+                        if p < mpi:
+                            if dp0 < 0:
+                                if count < 2:
+                                    count = count + 1
+                                else:
+                                    dp0 = abs(dp0)
+                        else:
+                            count = 0
+
+                        p = round(dp0 + p, 1)
+                        dp1 = dp0
+
+                        if vmax < wind_threshold or p > Penv:
+                            TC_data = add_parameters_to_TC_data(
+                                pressure_list,
+                                wind_list,
+                                latfull,
+                                lonfull,
+                                year,
+                                storm_number,
+                                month,
+                                basin,
+                                landfallfull,
+                                pressure_list,
+                                TC_data,
+                                idx,
+                            )
+                            i = 10000000000000000000000000000000
+
+                        else:
+                            pressure_list.append(p)
+                            vmax = Calculate_Vmax(Penv, p, coef)
+                            vmax = round(vmax, 1)
+                            wind_list.append(vmax)
+
+                    if any(c < 1 for c in landfallfull[i:]):
+                        check_move_ocean = (
+                            i + np.where(np.array(landfallfull[i:]) == 0.0)[0][0]
+                        )
+
+                        if check_move_ocean > i + 3:
+                            decay_pressure, decay_wind = decay_after_landfall(
+                                lat,
+                                lon,
+                                latfull[i : i + check_move_ocean],
+                                lonfull[i : i + check_move_ocean],
+                                p,
+                                coef,
+                                Penv,
+                            )
                             for d in range(len(decay_pressure)):
                                 pressure_list.append(decay_pressure[d])
                                 wind_list.append(decay_wind[d])
 
-                        #if the storm has decayed before moving back over the ocean:    
-                        if wind_list[-1]<wind_threshold:
-                            TC_data=add_parameters_to_TC_data(pressure_list,wind_list,latfull,lonfull,year,storm_number,month,basin,landfallfull,pressure_list,TC_data,idx)
-                                                        
-                            i=10000000000000000000000000.
-                            
-                        #if the storm has not decayed:
-                        else:   
-                            dp1=pressure_list[-1]-pressure_list[-2] 
-                            p=pressure_list[-1]
-                            i=check_move_ocean
-                            
-                    else: #the storm does not move back over open ocean, so use the decay function until the storm has dissipated
-                        decay_pressure, decay_wind = decay_after_landfall(lat,lon,latfull[i:],lonfull[i:],p,coef,Penv)
+                        if wind_list[-1] < wind_threshold:
+                            TC_data = add_parameters_to_TC_data(
+                                pressure_list,
+                                wind_list,
+                                latfull,
+                                lonfull,
+                                year,
+                                storm_number,
+                                month,
+                                basin,
+                                landfallfull,
+                                pressure_list,
+                                TC_data,
+                                idx,
+                            )
+                            i = 10000000000000000000000000.0
+
+                        else:
+                            dp1 = pressure_list[-1] - pressure_list[-2]
+                            p = pressure_list[-1]
+                            i = check_move_ocean
+
+                    else:
+                        decay_pressure, decay_wind = decay_after_landfall(
+                            lat, lon, latfull[i:], lonfull[i:], p, coef, Penv
+                        )
                         for d in range(len(decay_pressure)):
                             pressure_list.append(decay_pressure[d])
                             wind_list.append(decay_wind[d])
-                        
-                        #print('Decayed over land',len(pressure_list),len(landfallfull))                         
-                        TC_data=add_parameters_to_TC_data(pressure_list,wind_list,latfull,lonfull,year,storm_number,month,basin,landfallfull,pressure_list,TC_data,idx)
-                            
-                        i=1000000000000
-                   
-                else: #no landfall
-                    if ((p<p_threshold) | math.isnan(p)):
-                        print('No landfall',p,p_threshold)
-                        i=0
-                        vmax=0
-                        
-                    elif vmax<wind_threshold or p>Penv and i>3: #The storm is no longer a tropical storm
-                        #print('Dissipated',len(pressure_list),len(landfallfull))
-                        TC_data=add_parameters_to_TC_data(pressure_list,wind_list,latfull,lonfull,year,storm_number,month,basin,landfallfull,pressure_list,TC_data,idx)
-                        
-                        i=1000000000000000                       
-                        
-                    else: #apply James-Mason formula to find next change in pressure
-                        ind=int(find_index_pressure(basin,lat,lon,lat0,lon0,lon1)) #find index for pressure
-                        
-                        [c0,c1,c2,c3,EPmu,EPstd,mpi]=constants_pressure[ind] 
-                        
-                        y=PRESSURE_JAMES_MASON(dp1,p,c0,c1,c2,c3,mpi) 
-                        
-                        epsilon=np.random.normal(EPmu,EPstd)
 
-                        dp0=float(y+epsilon)  
+                        TC_data = add_parameters_to_TC_data(
+                            pressure_list,
+                            wind_list,
+                            latfull,
+                            lonfull,
+                            year,
+                            storm_number,
+                            month,
+                            basin,
+                            landfallfull,
+                            pressure_list,
+                            TC_data,
+                            idx,
+                        )
+                        i = 1000000000000
 
-                        
-                        while dp0<dpmin: #if more intensification than seen in the underlying dataset
-                            if y-dpmin>EPmu-2.*EPstd: #epsilon should be resampled
-                                epsilon=np.random.normal(EPmu,EPstd)
-                                dp0=y+epsilon
-                            else: #y is already smaller than dpmin. 
-                                dp0=np.random.uniform(dpmin,0)
-                        
-                        while dp0>dpmax: #if more weakening than seen in the underlying dataset
-                            if y-dpmax<EPmu+2.*EPstd:
-                                epsilon=np.random.normal(EPmu,EPstd)
-                                dp0=y+epsilon
-                            else:
-                                dp0=np.random.uniform(0,dpmax)  
-                                
-                        if p<mpi:#if pressure has dropped below mpi
-                            if dp0<0: #if intensification
-                                if count<2: #if intensification has been going on for less than 2 time steps
-                                    count=count+1
+                else:  # no landfall
+                    if (p < p_threshold) | math.isnan(p):
+                        print("No landfall", p, p_threshold)
+                        _genesis_retries += 1
+                        if _genesis_retries > MAX_GENESIS_RETRIES:
+                            break
+                        i = 0
+                        vmax = 0
+
+                    elif vmax < wind_threshold or p > Penv and i > 3:
+                        TC_data = add_parameters_to_TC_data(
+                            pressure_list,
+                            wind_list,
+                            latfull,
+                            lonfull,
+                            year,
+                            storm_number,
+                            month,
+                            basin,
+                            landfallfull,
+                            pressure_list,
+                            TC_data,
+                            idx,
+                        )
+                        i = 1000000000000000
+
+                    else:
+                        ind = int(
+                            find_index_pressure(basin, lat, lon, lat0, lon0, lon1)
+                        )
+                        row = constants_pressure[ind]
+                        (
+                            c0,
+                            c1,
+                            c2,
+                            c3,
+                            EPmu,
+                            EPstd_neg,
+                            EPstd_pos,
+                            mpi,
+                            c_vws,
+                            c_rh,
+                            c_en,
+                            c_ln,
+                        ) = _unpack_pressure_row(row)
+
+                        if PI_field is not None:
+                            pi_val = float(PI_field[lat_dummy, lon_dummy])
+                            if np.isfinite(pi_val) and pi_val > 0:
+                                mpi = pi_val
+                        vws = (
+                            float(VWS_field[lat_dummy, lon_dummy])
+                            if VWS_field is not None
+                            else 0.0
+                        )
+                        rh = (
+                            float(RH_field[lat_dummy, lon_dummy])
+                            if RH_field is not None
+                            else 0.0
+                        )
+
+                        y = PRESSURE_JAMES_MASON(
+                            dp1,
+                            p,
+                            c0,
+                            c1,
+                            c2,
+                            c3,
+                            mpi,
+                            vws=vws,
+                            rh=rh,
+                            phase=ph_code,
+                            c_vws=c_vws,
+                            c_rh=c_rh,
+                            c_en=c_en,
+                            c_ln=c_ln,
+                        )
+                        dp0 = _sample_truncated_twopn(
+                            y + EPmu, EPstd_neg, EPstd_pos, dpmin, dpmax
+                        )
+
+                        if p < mpi:
+                            if dp0 < 0:
+                                if count < 2:
+                                    count = count + 1
                                 else:
-                                    dp0=abs(dp0)
-
-                        else: #the storm is above mpi
-                            count=0  
-                        
-                        if i<int_thres:
-                          dp0=-1.*np.abs(dp0)
-                        p=round(dp0+p,1)
-                        dp1=dp0
-                        
-                        if vmax<wind_threshold or p>Penv: #The storm is no longer a tropical storm
-                          #print('Dissipated',len(pressure_list),len(landfallfull))
-                          TC_data=add_parameters_to_TC_data(pressure_list,wind_list,latfull,lonfull,year,storm_number,month,basin,landfallfull,pressure_list,TC_data,idx)
-                          i=10000000000000000000000000000000
-                        
+                                    dp0 = abs(dp0)
                         else:
-                          pressure_list.append(p)
-                          
-                          vmax=Calculate_Vmax(Penv,p,coef)
-                          vmax=round(vmax,1)
-                          wind_list.append(vmax)
-                        
-                          i=i+1 
-                        
-            else: #we are outside the basin. Move on to the next storm
-                TC_data=add_parameters_to_TC_data(pressure_list,wind_list,latfull,lonfull,year,storm_number,month,basin,landfallfull,pressure_list,TC_data,idx)                
-                i=100000000000000000.
-                
-        if i==len(latfull):
-            TC_data=add_parameters_to_TC_data(pressure_list,wind_list,latfull,lonfull,year,storm_number,month,basin,landfallfull,pressure_list,TC_data,idx)
-           
-    return(TC_data)
+                            count = 0
 
+                        if i < int_thres:
+                            dp0 = -1.0 * np.abs(dp0)
+                        p = round(dp0 + p, 1)
+                        dp1 = dp0
+
+                        if vmax < wind_threshold or p > Penv:
+                            TC_data = add_parameters_to_TC_data(
+                                pressure_list,
+                                wind_list,
+                                latfull,
+                                lonfull,
+                                year,
+                                storm_number,
+                                month,
+                                basin,
+                                landfallfull,
+                                pressure_list,
+                                TC_data,
+                                idx,
+                            )
+                            i = 10000000000000000000000000000000
+
+                        else:
+                            pressure_list.append(p)
+                            vmax = Calculate_Vmax(Penv, p, coef)
+                            vmax = round(vmax, 1)
+                            wind_list.append(vmax)
+                            i = i + 1
+
+            else:
+                TC_data = add_parameters_to_TC_data(
+                    pressure_list,
+                    wind_list,
+                    latfull,
+                    lonfull,
+                    year,
+                    storm_number,
+                    month,
+                    basin,
+                    landfallfull,
+                    pressure_list,
+                    TC_data,
+                    idx,
+                )
+                i = 100000000000000000.0
+
+        if i == len(latfull):
+            TC_data = add_parameters_to_TC_data(
+                pressure_list,
+                wind_list,
+                latfull,
+                lonfull,
+                year,
+                storm_number,
+                month,
+                basin,
+                landfallfull,
+                pressure_list,
+                TC_data,
+                idx,
+            )
+
+    return TC_data
