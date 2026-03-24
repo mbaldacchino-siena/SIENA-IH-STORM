@@ -28,6 +28,15 @@ To get started, you should first create a conda environment using the provided `
    python3 -m pip install tcpypi
    ```
 
+3. **Add your CDS API information:**
+ ```bash  
+cat > ~/.cdsapirc <<'EOF'
+url: https://cds.climate.copernicus.eu/api
+key: you-can-get-it-from-https://cds.climate.copernicus.eu/how-to-api
+
+EOF
+```
+
 ## Running the Scripts
 
 Once you have activated the environment, you should run the scripts in the following order:
