@@ -164,6 +164,7 @@ def _sample_truncated_twopn(mu, std_neg, std_pos, lower, upper):
     draw = truncnorm.rvs(a_tn, b_tn, loc=mu_clamped, scale=sigma)
     return float(np.clip(draw, lower, upper))
 
+
 # ==========================================================================
 # PHYSICS FUNCTIONS (unchanged)
 # ==========================================================================
@@ -486,13 +487,13 @@ def TC_pressure(
                     pressure_list.append(p)
                     wind_list.append(vmax)
                     i = i + 1
-                else:
-                    # Storm is progressing normally — reset the retry counter
-                    _genesis_retries = 0
 
                 if landfall == 1:
                     if (p < p_threshold) | math.isnan(p):
                         print("Landfall", p, p_threshold)
+                        _genesis_retries += 1
+                        if _genesis_retries > MAX_GENESIS_RETRIES:
+                            break
                         i = 0
                         vmax = 0
 
@@ -671,6 +672,9 @@ def TC_pressure(
                 else:  # no landfall
                     if (p < p_threshold) | math.isnan(p):
                         print("No landfall", p, p_threshold)
+                        _genesis_retries += 1
+                        if _genesis_retries > MAX_GENESIS_RETRIES:
+                            break
                         i = 0
                         vmax = 0
 
