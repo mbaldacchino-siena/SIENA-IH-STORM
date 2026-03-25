@@ -35,7 +35,7 @@ def BOUNDARIES_BASINS(idx):
     if idx == 0:  # Eastern Pacific
         lat0, lat1, lon0, lon1 = 5, 60, 180, 285
     if idx == 1:  # North Atlantic
-        lat0, lat1, lon0, lon1 = 5, 60, 255, 355
+        lat0, lat1, lon0, lon1 = 5, 60, 255, 360
     if idx == 2:  # North Indian
         lat0, lat1, lon0, lon1 = 5, 60, 30, 100
     if idx == 3:  # South Indian

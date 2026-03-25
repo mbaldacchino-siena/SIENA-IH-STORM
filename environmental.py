@@ -1004,8 +1004,6 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=None)
                         matrix_mpi[i_ind, j_ind] = np.nanmin(MPI[latidx][lonidx])
                     except Exception:
                         matrix_mpi[i_ind, j_ind] = np.nan
-            if idx == 1:
-                matrix_mpi = np.c_[matrix_mpi, matrix_mpi[:, -1]]
 
             df_data = pd.DataFrame(
                 {
@@ -1048,10 +1046,7 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=None)
 
             latbins = np.unique(df_data1["latbin"])
             lonbins = df_data1.groupby("latbin")["lonbin"].apply(list)
-            if idx == 1:
-                lon1 = lon11 + 5
-            else:
-                lon1 = lon11
+            lon1 = lon11
 
             matrices = {
                 name: -100 * np.ones((int((lat1 - lat0) / 5), int((lon1 - lon0) / 5)))

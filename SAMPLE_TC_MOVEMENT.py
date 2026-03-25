@@ -15,7 +15,7 @@ __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file
 
 _BASIN_BOUNDS = {
     "EP": (5, 60, 180, 285),
-    "NA": (5, 60, 255, 359),
+    "NA": (5, 60, 255, 360),
     "NI": (5, 60, 30, 100),
     "SI": (-60, -5, 10, 135),
     "SP": (-60, -5, 135, 240),
