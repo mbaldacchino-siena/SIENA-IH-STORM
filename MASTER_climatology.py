@@ -5,7 +5,7 @@ Functions described here are part of the data pre-processing.
 Strongly inspired from 2024 Itxaso Odériz.
 
 Copyright (C) 2026 Mathys Baldacchino.
- 
+
 
 """
 
@@ -28,6 +28,7 @@ __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file
     months_for_coef_MPI,
     months_for_coef_PRESS,
     generation_phase,
+    genesis_weighting,
 ) = import_data.input_data("input.dat")
 
 print("period:", period)
@@ -36,6 +37,7 @@ print("threshold:", threshold)
 print("idx_basin:", idx_basin)
 print("months:", months)
 print("mpi_bounds:", mpi_bounds)
+print("genesis method:", genesis_weighting)
 
 # Always prepare the all-years inputs first.
 climatology.climatology_data(period)

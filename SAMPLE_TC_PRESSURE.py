@@ -95,7 +95,7 @@ def _lon_to_idx(lon):
 # Poisson draws and file loads just to return static coordinates)
 _BASIN_BOUNDS = {
     "EP": (5, 60, 180, 285),
-    "NA": (5, 60, 255, 359),
+    "NA": (5, 60, 255, 360),
     "NI": (5, 60, 30, 100),
     "SI": (-60, -5, 10, 135),
     "SP": (-60, -5, 135, 240),
@@ -431,7 +431,7 @@ def TC_pressure(
         # produces bad pressure (e.g., low Penv + high sampled wind),
         # the loop never terminates. Cap at MAX_GENESIS_RETRIES and skip.
         _genesis_retries = 0
-        MAX_GENESIS_RETRIES = 25
+        MAX_GENESIS_RETRIES = 50
 
         # OPTIMIZATION: Load environmental fields via cache.
         # Original called np.loadtxt per storm — now each unique

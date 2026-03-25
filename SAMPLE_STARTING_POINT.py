@@ -29,7 +29,7 @@ def Check_if_landfall(lat, lon, basin, land_mask):
     return land_mask[y, x]
 
 
-def _build_weighted_index(grid_copy, round_coeff = 6):
+def _build_weighted_index(grid_copy, round_coeff = 4):
     """
     Build the weighted sampling list from a genesis grid.
     Returns an empty list if the grid has no valid positive entries.
@@ -46,7 +46,7 @@ def _build_weighted_index(grid_copy, round_coeff = 6):
                 continue
             value = int((10**round_coeff) * cell)
             if value > 0:
-                weighted_list_index.extend([i * (ncols - 1) + j] * value)
+                weighted_list_index.extend([i * (ncols ) + j] * value)
     return weighted_list_index, grid_copy
 
 
@@ -99,8 +99,8 @@ def Startingpoint(no_storms, monthlist, basin, phase=None):
         while var == 0 and attempts < max_attempts:
             attempts += 1
             idx0 = random.choice(weighted_list_index)
-            row = int(np.floor(idx0 / (ncols - 1)))
-            col = int(idx0 % (ncols - 1))
+            row = int(np.floor(idx0 / (ncols)))
+            col = int(idx0 % (ncols))
             lat_pert = random.uniform(0, 0.94)
             lon_pert = random.uniform(0, 0.94)
             lon_pt = lon0 + round(col + lon_pert, 1)

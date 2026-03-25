@@ -64,7 +64,7 @@ def BOUNDARIES_BASINS(idx):
     if idx == "EP":  # Eastern Pacific
         lat0, lat1, lon0, lon1 = 5, 60, 180, 285
     if idx == "NA":  # North Atlantic
-        lat0, lat1, lon0, lon1 = 5, 60, 255, 359
+        lat0, lat1, lon0, lon1 = 5, 60, 255, 360
     if idx == "NI":  # North Indian
         lat0, lat1, lon0, lon1 = 5, 60, 30, 100
     if idx == "SI":  # South Indian
@@ -472,7 +472,7 @@ def Change_genesis_locations(idx_basin, months, genesis_weighting):
                     ),
                     env_weight,
                 )
-            if genesis_mode == "GPI":
+            elif genesis_mode == "GPI":
                 genesis_grids = compute_gpi_field(basin, month, phase=None)
                 np.savetxt(
                     os.path.join(
@@ -536,7 +536,7 @@ def Change_genesis_locations(idx_basin, months, genesis_weighting):
                         env_phase = None
                         if genesis_mode == "GPI-MIX":
                             env_phase = compute_gpi_field(basin, month, phase=phase)
-                        if genesis_mode == "GPI":
+                        elif genesis_mode == "GPI":
                             genesis_phase = compute_gpi_field(basin, month, phase=phase)
                         elif genesis_mode != "EMPIRICAL":
                             env_phase = build_environmental_genesis_factor(

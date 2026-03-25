@@ -48,7 +48,7 @@ def Basins_WMO(basin, phase=None):
     if idx==0:
         lat0,lat1,lon0,lon1=5,60,180,285
     if idx==1:
-        lat0,lat1,lon0,lon1=5,60,255,359
+        lat0,lat1,lon0,lon1=5,60,255,360
     if idx==2:
         lat0,lat1,lon0,lon1=5,60,30,100
     if idx==3:
