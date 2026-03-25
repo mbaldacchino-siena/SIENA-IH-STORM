@@ -431,7 +431,7 @@ def TC_pressure(
         # produces bad pressure (e.g., low Penv + high sampled wind),
         # the loop never terminates. Cap at MAX_GENESIS_RETRIES and skip.
         _genesis_retries = 0
-        MAX_GENESIS_RETRIES = 25
+        MAX_GENESIS_RETRIES = 50
 
         # OPTIMIZATION: Load environmental fields via cache.
         # Original called np.loadtxt per storm — now each unique
