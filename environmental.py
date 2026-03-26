@@ -1001,7 +1001,7 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=None)
                     i_ind = int((latidx - lat0) / 5.0)
                     j_ind = int((lonidx - lon0) / 5.0)
                     try:
-                        matrix_mpi[i_ind, j_ind] = np.nanmin(MPI[latidx][lonidx])
+                        matrix_mpi[i_ind, j_ind] = np.nanmedian(MPI[latidx][lonidx])
                     except Exception:
                         matrix_mpi[i_ind, j_ind] = np.nan
 
@@ -1080,7 +1080,7 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=None)
                             key = (int(latidx + lat_sur), int(lonidx + lon_sur))
                             if key in lijst:
                                 try:
-                                    local_mpi = np.nanmin(
+                                    local_mpi = np.nanmedian(
                                         MPI[latidx + lat_sur][lonidx + lon_sur]
                                     )
                                 except Exception:
