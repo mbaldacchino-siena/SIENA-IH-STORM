@@ -65,7 +65,11 @@ def _run_single_job(job, years_per_loop):
                 storms_per_year, genesis_month, basin, phase=phase
             )
             latlist, lonlist, landfalllist = TC_movement(
-                lon_genesis_list, lat_genesis_list, basin, phase=phase
+                lon_genesis_list,
+                lat_genesis_list,
+                basin,
+                phase=phase,
+                monthlist=genesis_month,
             )
             TC_data = TC_pressure(
                 basin,
