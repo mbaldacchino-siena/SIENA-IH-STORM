@@ -1,16 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-This module is part of the STORM model
+Track coefficient fitting for SIENA-IH-STORM.
 
-For more information, please see
-Bloemendaal, N., Haigh, I.D., de Moel, H. et al.
-Generation of a global synthetic tropical cyclone hazard dataset using STORM.
-Sci Data 7, 40 (2020). https://doi.org/10.1038/s41597-020-0381-2
+CHANGE LOG (VWS track update):
+  - Replaced ENSO phase dummies (I_EN, I_LN) with VWS as a continuous
+    physical covariate in both lat and lon track models.
+  - No ridge penalty needed: VWS is a continuous predictor, not a sparse
+    dummy. Plain OLS via np.linalg.lstsq.
+  - Coefficient row layout (17 elements, same length as before):
+      [0]  a_lat0     intercept (latitude)
+      [1]  a_lat1     dlat0 coefficient
+      [2]  a_lat2     latitude coefficient
+      [3]  b_vws_lat  VWS coefficient (latitude)   ← was g_en
+      [4]  0.0        unused                        ← was g_ln
+      [5]  b_lon0     intercept (longitude)
+      [6]  b_lon1     dlon0 coefficient
+      [7]  b_vws_lon  VWS coefficient (longitude)   ← was d_en
+      [8]  0.0        unused                        ← was d_ln
+      [9]  Elatmu     latitude residual mean
+      [10] Elatstd    latitude residual std
+      [11] Elonmu     longitude residual mean
+      [12] Elonstd    longitude residual std
+      [13] Dlat0mu    initial dlat0 mean
+      [14] Dlat0std   initial dlat0 std
+      [15] Dlon0mu    initial dlon0 mean
+      [16] Dlon0std   initial dlon0 std
 
-Functions described here are part of the data pre-processing and derive the coefficients
-of the regression formulas.
-
-FIX: Ridge penalty λ is selected per basin via leave-one-year-out CV.
+  REQUIRES: re-run MASTER_preprocessing.py to regenerate TRACK_COEFFICIENTS.npy
 """
 
 import numpy as np
@@ -19,78 +35,23 @@ import pandas as pd
 import preprocessing
 import os
 import sys
-from siena_utils import solve_ridge, select_lambda_cv
 
 dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
-LAMBDA_GRID = [0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
 
-
-def LATEXPECTED(dlat, lat, beta):
-    return (
-        beta[0]
-        + beta[1] * np.asarray(dlat)
-        + beta[2] * np.asarray(lat)
-        + beta[3] * np.asarray(beta[-2:]).sum() * 0
-    )
-
-
-def _select_basin_lambda(
-    df, lat_col, dlat0_col, dlat1_col, dlon0_col, dlon1_col, lambda_grid=LAMBDA_GRID
-):
+def track_coefficients():
     """
-    Basin-level leave-one-year-out CV to select ridge penalty for ENSO dummies.
+    Calculate pooled track coefficients with VWS as environmental covariate.
 
-    Pools all latitude bins together for the CV (selecting one λ per basin),
-    then that λ is applied in all latitude-bin fits.
+    Models:
+        dlat1 = a + b·dlat0 + c·lat + β_vws·VWS + ε_lat
+        dlon1 = a + b·dlon0 + γ_vws·VWS + ε_lon
 
-    Returns
-    -------
-    lam_lat : float, selected λ for latitude model
-    lam_lon : float, selected λ for longitude model
+    VWS carries the ENSO signal implicitly: at runtime, phase-specific
+    VWS climatology fields are loaded, so El Niño storms experience
+    different VWS than La Niña storms at the same location.
     """
-    df = df.copy()
-    df["I_EN"] = (df["Phase"] == 2).astype(float)
-    df["I_LN"] = (df["Phase"] == 0).astype(float)
-
-    # Only use rows with valid year for CV
-    df = df[df["Year"] > 0].copy()
-    if len(df) < 100:
-        return 5.0, 5.0  # fallback if too little data
-
-    # Latitude model: dlat1 ~ 1 + dlat0 + latitude + I_EN + I_LN
-    X_lat = np.column_stack(
-        [df[dlat0_col].values, df[lat_col].values, df["I_EN"].values, df["I_LN"].values]
-    )
-    y_lat = df[dlat1_col].values
-    years_lat = df["Year"].values
-
-    # penalty_cols=[3,4] in augmented X (after intercept prepend):
-    #   col 0=intercept, 1=dlat0, 2=lat, 3=I_EN, 4=I_LN
-    lam_lat, mse_lat, results_lat = select_lambda_cv(
-        X_lat, y_lat, years_lat, penalty_cols=[3, 4], lambda_grid=lambda_grid
-    )
-
-    # Longitude model: dlon1 ~ 1 + dlon0 + I_EN + I_LN
-    X_lon = np.column_stack(
-        [df[dlon0_col].values, df["I_EN"].values, df["I_LN"].values]
-    )
-    y_lon = df[dlon1_col].values
-    years_lon = df["Year"].values
-
-    # penalty_cols=[2,3] in augmented X:
-    #   col 0=intercept, 1=dlon0, 2=I_EN, 3=I_LN
-    lam_lon, mse_lon, results_lon = select_lambda_cv(
-        X_lon, y_lon, years_lon, penalty_cols=[2, 3], lambda_grid=lambda_grid
-    )
-
-    return lam_lat, lam_lon
-
-
-
-def track_coefficients(lambda_phase=5.0):
-    """Calculate pooled track coefficients with ENSO phase dummies."""
     step = 5.0
     data = np.load(
         os.path.join(__location__, "TC_TRACK_VARIABLES.npy"), allow_pickle=True
@@ -98,6 +59,9 @@ def track_coefficients(lambda_phase=5.0):
     coefficients_list = {i: [] for i in range(0, 6)}
 
     for idx in range(0, 6):
+        # Build DataFrame including VWS
+        vws_raw = data[8][idx] if 8 in data else [np.nan] * len(data[0][idx])
+
         df = pd.DataFrame(
             {
                 "Latitude": data[4][idx],
@@ -106,9 +70,16 @@ def track_coefficients(lambda_phase=5.0):
                 "Dlat1": data[1][idx],
                 "Dlon0": data[2][idx],
                 "Dlon1": data[3][idx],
-                "Phase": data[6][idx] if 6 in data else np.ones(len(data[0][idx])),
+                "VWS": vws_raw,
             }
         )
+
+        # Replace NaN VWS with basin mean (neutral effect)
+        vws_mean = df["VWS"].median()
+        if not np.isfinite(vws_mean):
+            vws_mean = 10.0  # fallback
+        df["VWS"] = df["VWS"].fillna(vws_mean)
+
         lat0, lat1, lon0, lon1 = preprocessing.BOUNDARIES_BASINS(idx)
         df = df[
             (df["Latitude"] <= lat1)
@@ -122,77 +93,75 @@ def track_coefficients(lambda_phase=5.0):
         df["latbin"] = df.Latitude.map(to_bin)
         coeff_array = [[0]] * len(latspace)
         count = 0
+
         for latbin in np.unique(df["latbin"]):
             i_ind = int((latbin - lat0) / step)
             sub = df[df["latbin"] == latbin].copy()
+
             if len(sub) > 50:
-                sub["I_EN"] = (sub["Phase"] == 2).astype(float)
-                sub["I_LN"] = (sub["Phase"] == 0).astype(float)
                 try:
-                    # latitude model: dlat1 ~ 1 + dlat0 + latitude + phase dummies
+                    # ── Latitude model: dlat1 ~ 1 + dlat0 + lat + VWS ──
                     X_lat = np.column_stack(
                         [
+                            np.ones(len(sub)),
                             sub["Dlat0"].values,
                             sub["Latitude"].values,
-                            sub["I_EN"].values,
-                            sub["I_LN"].values,
+                            sub["VWS"].values,
                         ]
                     )
                     y_lat = sub["Dlat1"].values
-                    beta_lat = solve_ridge(
-                        X_lat,
-                        y_lat,
-                        penalty_cols=[3, 4],
-                        alpha=lambda_phase,
-                        add_intercept=True,
-                    )
-                    pred_lat = beta_lat[0] + X_lat @ beta_lat[1:]
+                    beta_lat, *_ = np.linalg.lstsq(X_lat, y_lat, rcond=None)
+                    # beta_lat = [intercept, b_dlat0, b_lat, b_vws_lat]
+
+                    pred_lat = X_lat @ beta_lat
                     e_lat = y_lat - pred_lat
                     Elatmu, Elatstd = norm.fit(e_lat)
 
-                    # longitude model: dlon1 ~ 1 + dlon0 + phase dummies
+                    # ── Longitude model: dlon1 ~ 1 + dlon0 + VWS ──
                     X_lon = np.column_stack(
-                        [sub["Dlon0"].values, sub["I_EN"].values, sub["I_LN"].values]
+                        [
+                            np.ones(len(sub)),
+                            sub["Dlon0"].values,
+                            sub["VWS"].values,
+                        ]
                     )
                     y_lon = sub["Dlon1"].values
-                    beta_lon = solve_ridge(
-                        X_lon,
-                        y_lon,
-                        penalty_cols=[2, 3],
-                        alpha=lambda_phase,
-                        add_intercept=True,
-                    )
-                    pred_lon = beta_lon[0] + X_lon @ beta_lon[1:]
+                    beta_lon, *_ = np.linalg.lstsq(X_lon, y_lon, rcond=None)
+                    # beta_lon = [intercept, b_dlon0, b_vws_lon]
+
+                    pred_lon = X_lon @ beta_lon
                     e_lon = y_lon - pred_lon
                     Elonmu, Elonstd = norm.fit(e_lon)
 
                     Dlat0mu, Dlat0std = norm.fit(sub["Dlat0"].values)
                     Dlon0mu, Dlon0std = norm.fit(sub["Dlon0"].values)
+
                     if abs(Elatmu) < 1 and abs(Elonmu) < 1:
                         coeff_array[i_ind] = [
-                            beta_lat[0],
-                            beta_lat[1],
-                            beta_lat[2],
-                            beta_lat[3],
-                            beta_lat[4],
-                            beta_lon[0],
-                            beta_lon[1],
-                            beta_lon[2],
-                            beta_lon[3],
-                            Elatmu,
-                            Elatstd,
-                            Elonmu,
-                            Elonstd,
-                            Dlat0mu,
-                            Dlat0std,
-                            Dlon0mu,
-                            Dlon0std,
+                            beta_lat[0],  # [0] a_lat0: intercept
+                            beta_lat[1],  # [1] a_lat1: dlat0 coeff
+                            beta_lat[2],  # [2] a_lat2: latitude coeff
+                            beta_lat[3],  # [3] b_vws_lat: VWS coeff (was g_en)
+                            0.0,  # [4] unused (was g_ln)
+                            beta_lon[0],  # [5] b_lon0: intercept
+                            beta_lon[1],  # [6] b_lon1: dlon0 coeff
+                            beta_lon[2],  # [7] b_vws_lon: VWS coeff (was d_en)
+                            0.0,  # [8] unused (was d_ln)
+                            Elatmu,  # [9]
+                            Elatstd,  # [10]
+                            Elonmu,  # [11]
+                            Elonstd,  # [12]
+                            Dlat0mu,  # [13]
+                            Dlat0std,  # [14]
+                            Dlon0mu,  # [15]
+                            Dlon0std,  # [16]
                         ]
                         count += 1
                 except Exception as exc:
                     print(f"No fit found for basin {idx}, latbin {latbin}: {exc}")
 
-        if idx in (3, 4):
+        # ── Gap-fill unfitted latitude bins (same logic as original) ──
+        if idx in (3, 4):  # SH basins: fill from high lat toward equator
             while count < len(latspace):
                 for i in reversed(range(len(latspace))):
                     if len(coeff_array[i]) == 1:
@@ -202,7 +171,7 @@ def track_coefficients(lambda_phase=5.0):
                         elif i > 0 and len(coeff_array[i - 1]) > 1:
                             coeff_array[i] = coeff_array[i - 1]
                             count += 1
-        else:
+        else:  # NH basins: fill from equator toward pole
             while count < len(latspace):
                 for i in range(len(latspace)):
                     if len(coeff_array[i]) == 1:

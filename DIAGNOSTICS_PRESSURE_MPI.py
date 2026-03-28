@@ -164,11 +164,11 @@ def diagnose_mpi_consistency():
         delta_mpi = pi_runtime - mpi_fitted
 
     And its impact on the exponential term:
-        ratio = exp(-d * delta_mpi)
+        ratio = exp(+d * delta_mpi)
 
-    If ratio << 1 (say < 0.5), the intensification signal is dramatically
-    suppressed at runtime relative to training.
-    If ratio >> 1 (say > 2.0), the intensification signal is amplified.
+    If ratio >> 1 (say > 1.5), the exponential brake is much STRONGER at
+    runtime than during training → storms under-intensify.
+    If ratio << 1 (say < 0.7), the brake is WEAKER → storms over-intensify.
     """
     import preprocessing
 
@@ -265,9 +265,11 @@ def diagnose_mpi_consistency():
                         # How much the exponential term shifts:
                         # At training: c * exp(-d * (P - mpi_fitted))
                         # At runtime:  c * exp(-d * (P - pi_runtime))
-                        #            = c * exp(-d * (P - mpi_fitted)) * exp(-d * delta_mpi)
-                        # So the multiplicative change is exp(-d * delta_mpi)
-                        exp_ratio = np.exp(-d_val * delta_mpi)
+                        #            = c * exp(-d * (P - mpi_fitted - delta_mpi))
+                        #            = c * exp(-d * (P - mpi_fitted)) * exp(+d * delta_mpi)
+                        # So the multiplicative change is exp(+d * delta_mpi)
+                        # ratio > 1 means stronger brake at runtime (storms under-intensify)
+                        exp_ratio = np.exp(d_val * delta_mpi)
 
                 rows.append(
                     {
@@ -298,6 +300,9 @@ def diagnose_mpi_consistency():
                         ),
                         "FLAG_ratio_lt_0.5": int(
                             exp_ratio < 0.5 if np.isfinite(exp_ratio) else False
+                        ),
+                        "FLAG_ratio_gt_1.5": int(
+                            exp_ratio > 1.5 if np.isfinite(exp_ratio) else False
                         ),
                         "FLAG_ratio_gt_2.0": int(
                             exp_ratio > 2.0 if np.isfinite(exp_ratio) else False
@@ -543,10 +548,14 @@ def write_summary(df_exp, df_mpi, df_vws, fpath):
                 f"  |ΔMPI| > 20 hPa: {valid['FLAG_delta_gt_20'].sum()} cells ({100 * valid['FLAG_delta_gt_20'].mean():.1f}%)"
             )
 
-            lines.append(f"\nExponential ratio = exp(-d × ΔMPI):")
-            lines.append(f"  This is how much the intensification signal SHIFTS at")
-            lines.append(f"  runtime relative to training. ratio<1 = suppressed,")
-            lines.append(f"  ratio>1 = amplified.")
+            lines.append(f"\nExponential ratio = exp(+d × ΔMPI):")
+            lines.append(f"  This is the multiplicative change in the exponential")
+            lines.append(f"  brake at runtime relative to training.")
+            lines.append(
+                f"  ratio>1 = brake STRONGER at runtime → storms under-intensify"
+            )
+            lines.append(f"  ratio<1 = brake WEAKER at runtime → storms over-intensify")
+            lines.append(f"  ratio≈1 = consistent (target after fix)")
             ratio_valid = valid[valid["exp_ratio"].notna()]
             if len(ratio_valid) > 0:
                 lines.append(f"  mean:   {ratio_valid['exp_ratio'].mean():.3f}")
@@ -554,43 +563,56 @@ def write_summary(df_exp, df_mpi, df_vws, fpath):
                 lines.append(f"  p05:    {ratio_valid['exp_ratio'].quantile(0.05):.3f}")
                 lines.append(f"  p95:    {ratio_valid['exp_ratio'].quantile(0.95):.3f}")
                 lines.append(
-                    f"  ratio < 0.5: {valid['FLAG_ratio_lt_0.5'].sum()} cells"
-                    f" — intensification suppressed by >50%"
+                    f"  ratio > 1.5: {valid['FLAG_ratio_gt_1.5'].sum()} cells"
+                    f" — brake 50%+ stronger, storms under-intensify"
                 )
                 lines.append(
                     f"  ratio > 2.0: {valid['FLAG_ratio_gt_2.0'].sum()} cells"
-                    f" — intensification amplified by >100%"
+                    f" — brake 100%+ stronger, significant under-intensification"
+                )
+                lines.append(
+                    f"  ratio < 0.5: {valid['FLAG_ratio_lt_0.5'].sum()} cells"
+                    f" — brake 50%+ weaker, storms over-intensify"
                 )
 
             lines.append(f"\nINTERPRETATION:")
             med_delta = valid["delta_mpi"].median()
+            med_ratio = (
+                ratio_valid["exp_ratio"].median() if len(ratio_valid) > 0 else np.nan
+            )
             if abs(med_delta) < 5:
-                lines.append(f"  ✓ Median ΔMPI = {med_delta:+.1f} hPa — GOOD.")
+                lines.append(
+                    f"  ✓ Median ΔMPI = {med_delta:+.1f} hPa (ratio={med_ratio:.2f}) — GOOD."
+                )
                 lines.append(
                     f"    The fitted MPI and runtime PI are broadly consistent."
                 )
             elif abs(med_delta) < 15:
                 lines.append(
-                    f"  ⚠ Median ΔMPI = {med_delta:+.1f} hPa — MODERATE CONCERN."
+                    f"  ⚠ Median ΔMPI = {med_delta:+.1f} hPa (ratio={med_ratio:.2f}) — MODERATE."
                 )
+                if med_delta > 0:
+                    lines.append(
+                        f"    PI_runtime > MPI_fitted → exponential brake is STRONGER"
+                    )
+                    lines.append(f"    at runtime → synthetic storms UNDER-INTENSIFY.")
+                else:
+                    lines.append(
+                        f"    PI_runtime < MPI_fitted → exponential brake is WEAKER"
+                    )
+                    lines.append(f"    at runtime → synthetic storms OVER-INTENSIFY.")
                 lines.append(
-                    f"    The exponential term is shifted but not catastrophically."
+                    f"    Consider changing nanmin → nanmedian in MPI aggregation."
                 )
-                lines.append(f"    Consider re-fitting with PI field as MPI source.")
             else:
                 lines.append(
-                    f"  ✗ Median ΔMPI = {med_delta:+.1f} hPa — SERIOUS MISMATCH."
+                    f"  ✗ Median ΔMPI = {med_delta:+.1f} hPa (ratio={med_ratio:.2f}) — SERIOUS."
                 )
                 lines.append(
                     f"    The regression was trained on a substantially different"
                 )
-                lines.append(
-                    f"    MPI than what's used at runtime. The pressure model's"
-                )
-                lines.append(f"    intensification behavior is unreliable.")
-                lines.append(
-                    f"    FIX: Re-run preprocessing with PI field as MPI source,"
-                )
+                lines.append(f"    MPI than what's used at runtime.")
+                lines.append(f"    FIX: Change nanmin → nanmedian in environmental.py,")
                 lines.append(f"    or remove the PI override in SAMPLE_TC_PRESSURE.py.")
 
             # Per-basin

@@ -267,7 +267,7 @@ def decay_after_landfall(lat_landfall, lon_landfall, latlijst, lonlijst, p, coef
     j = 1
     pres_landfall = p
 
-    while v > 35 or j < len(latlijst):
+    while v > 35 and j < len(latlijst):
         try:
             D = haversine(lat_landfall, lon_landfall, latlijst[j], lonlijst[j])
             if D == 0.0:
@@ -280,12 +280,13 @@ def decay_after_landfall(lat_landfall, lon_landfall, latlijst, lonlijst, p, coef
                 b_KM = D1 * t * (t0 - t)
                 C_KM = M * np.log(D / D0) + b_KM
                 v = vb + (R * v0 - vb) * np.exp(-alpha * t) - C_KM
+                if v * 0.51444 < 18.0:
+                    return pressure_decay, wind_decay
                 pres_landfall = Calculate_Pressure(v * 0.514444, Penv, coef)
                 pres_landfall = round(pres_landfall, 1)
                 pressure_decay.append(pres_landfall)
                 wind_decay.append(v * 0.514444)
-                if v * 0.51444 < 18.0:
-                    return pressure_decay, wind_decay
+                
                 else:
                     t = t + 3
                     j = j + 1
