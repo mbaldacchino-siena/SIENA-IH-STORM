@@ -286,10 +286,8 @@ def decay_after_landfall(lat_landfall, lon_landfall, latlijst, lonlijst, p, coef
                 pres_landfall = round(pres_landfall, 1)
                 pressure_decay.append(pres_landfall)
                 wind_decay.append(v * 0.514444)
-                
-                else:
-                    t = t + 3
-                    j = j + 1
+                t = t + 3
+                j = j + 1
             else:
                 j = j + 1
                 t = t + 3
