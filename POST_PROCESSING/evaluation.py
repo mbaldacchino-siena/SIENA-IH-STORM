@@ -58,8 +58,14 @@ import warnings
 from dataclasses import dataclass, field
 from math import radians, cos, sin, asin, sqrt
 from typing import Dict, List, Optional, Sequence, Tuple, Union
-from climada.hazard import Centroids, TCTracks
-from climada.hazard.trop_cyclone import TropCyclone
+
+try:
+    from climada.hazard import Centroids, TCTracks
+    from climada.hazard.trop_cyclone import TropCyclone
+
+    HAS_CLIMADA = True
+except ImportError:
+    HAS_CLIMADA = False
 
 import numpy as np
 import pandas as pd
@@ -104,30 +110,41 @@ SS_THRESHOLDS_MS = {
 
 # Default coastal cities (Table 3 of whitepaper)
 DEFAULT_CITIES = [
-    {"city": "Miami",       "lat": 25.8,  "lon": -80.2, "basin": "NA"},
-    {"city": "Houston",     "lat": 29.8,  "lon": -95.4, "basin": "NA"},
-    {"city": "New Orleans", "lat": 30.0,  "lon": -90.1, "basin": "NA"},
-    {"city": "Tampa",       "lat": 28.0,  "lon": -82.5, "basin": "NA"},
-    {"city": "New York",    "lat": 40.7,  "lon": -74.0, "basin": "NA"},
-    {"city": "Charleston",  "lat": 32.8,  "lon": -80.0, "basin": "NA"},
-    {"city": "Tokyo",       "lat": 35.7,  "lon": 139.7, "basin": "WP"},
-    {"city": "Manila",      "lat": 14.6,  "lon": 121.0, "basin": "WP"},
-    {"city": "Hong Kong",   "lat": 22.3,  "lon": 114.2, "basin": "WP"},
-    {"city": "Mumbai",      "lat": 19.1,  "lon": 72.9,  "basin": "NI"},
-    {"city": "Saint-Denis", "lat": -20.9, "lon": 55.5,  "basin": "SI"},
+    {"city": "Miami", "lat": 25.8, "lon": -80.2, "basin": "NA"},
+    {"city": "Houston", "lat": 29.8, "lon": -95.4, "basin": "NA"},
+    {"city": "New Orleans", "lat": 30.0, "lon": -90.1, "basin": "NA"},
+    {"city": "Tampa", "lat": 28.0, "lon": -82.5, "basin": "NA"},
+    {"city": "New York", "lat": 40.7, "lon": -74.0, "basin": "NA"},
+    {"city": "Charleston", "lat": 32.8, "lon": -80.0, "basin": "NA"},
+    {"city": "Tokyo", "lat": 35.7, "lon": 139.7, "basin": "WP"},
+    {"city": "Manila", "lat": 14.6, "lon": 121.0, "basin": "WP"},
+    {"city": "Hong Kong", "lat": 22.3, "lon": 114.2, "basin": "WP"},
+    {"city": "Mumbai", "lat": 19.1, "lon": 72.9, "basin": "NI"},
+    {"city": "Saint-Denis", "lat": -20.9, "lon": 55.5, "basin": "SI"},
 ]
 
 # Column names for the STORM .txt format
 STORM_COLUMNS = [
-    "year", "month", "storm_id", "timestep", "basin_id",
-    "lat", "lon", "pressure", "wind", "rmax",
-    "ss_cat", "landfall", "dist_land",
+    "year",
+    "month",
+    "storm_id",
+    "timestep",
+    "basin_id",
+    "lat",
+    "lon",
+    "pressure",
+    "wind",
+    "rmax",
+    "ss_cat",
+    "landfall",
+    "dist_land",
 ]
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # DATA LOADING
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def load_storm_file(filepath: str) -> pd.DataFrame:
     """Load a single STORM .txt file into a DataFrame."""
@@ -136,11 +153,19 @@ def load_storm_file(filepath: str) -> pd.DataFrame:
         header=None,
         names=STORM_COLUMNS,
         dtype={
-            "year": np.int32, "month": np.int32, "storm_id": np.int32,
-            "timestep": np.int32, "basin_id": np.int32,
-            "lat": np.float64, "lon": np.float64, "pressure": np.float64,
-            "wind": np.float64, "rmax": np.float64, "ss_cat": np.int32,
-            "landfall": np.int32, "dist_land": np.float64,
+            "year": np.int32,
+            "month": np.int32,
+            "storm_id": np.int32,
+            "timestep": np.int32,
+            "basin_id": np.int32,
+            "lat": np.float64,
+            "lon": np.float64,
+            "pressure": np.float64,
+            "wind": np.float64,
+            "rmax": np.float64,
+            "ss_cat": np.int32,
+            "landfall": np.int32,
+            "dist_land": np.float64,
         },
     )
     return df
@@ -231,17 +256,13 @@ def load_catalog(
 
         # Build a globally unique storm identifier
         # Within each file, (year, storm_id) is unique
-        df["global_storm_uid"] = (
-            df["global_year"] * 10_000 + df["storm_id"]
-        )
+        df["global_storm_uid"] = df["global_year"] * 10_000 + df["storm_id"]
 
         chunks.append(df)
         year_offset += n_years_chunk
 
     catalog = pd.concat(chunks, ignore_index=True)
     return catalog, files
-
-
 
 
 def pool_tctracks(track_input, deduplicate=True):
@@ -251,6 +272,8 @@ def pool_tctracks(track_input, deduplicate=True):
       - a list/tuple of TCTracks objects
     and return a single pooled TCTracks object.
     """
+    if not HAS_CLIMADA:
+        raise ImportError("CLIMADA is required for pool_tctracks. pip install climada")
     if isinstance(track_input, TCTracks):
         pooled = TCTracks(data=list(track_input.data))
     elif isinstance(track_input, (list, tuple)):
@@ -278,6 +301,7 @@ def pool_tctracks(track_input, deduplicate=True):
 # ═══════════════════════════════════════════════════════════════════════
 # §5.3  — COMPOSITE ALL CATALOG
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def _default_oni_table() -> pd.DataFrame:
     """
@@ -410,7 +434,9 @@ def assemble_all_catalog(
         if n_draw == 0:
             continue
 
-        cat, files = load_catalog(phase_folders[ph], basin, phase=ph, file_pattern=file_pattern)
+        cat, files = load_catalog(
+            phase_folders[ph], basin, phase=ph, file_pattern=file_pattern
+        )
         available_years = cat["global_year"].unique()
         if len(available_years) < n_draw:
             warnings.warn(
@@ -438,6 +464,7 @@ def assemble_all_catalog(
 # ═══════════════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def haversine(lon1, lat1, lon2, lat2):
     """Great-circle distance in km between two points (decimal degrees)."""
@@ -487,6 +514,7 @@ def _per_storm_agg(catalog: pd.DataFrame) -> pd.DataFrame:
 
 # ---------- 1. Annual genesis count ----------
 
+
 def annual_genesis_count(catalog: pd.DataFrame, n_years: int) -> dict:
     """
     Mean and std of annual TC formations.
@@ -507,6 +535,7 @@ def annual_genesis_count(catalog: pd.DataFrame, n_years: int) -> dict:
 
 
 # ---------- 2. Genesis density ----------
+
 
 def genesis_density(
     catalog: pd.DataFrame,
@@ -543,6 +572,7 @@ def genesis_density(
 
 # ---------- 3. Track density ----------
 
+
 def track_density(
     catalog: pd.DataFrame,
     n_years: int,
@@ -575,6 +605,7 @@ def track_density(
 
 
 # ---------- 4. Intensity distributions ----------
+
 
 def intensity_distributions(
     catalog: pd.DataFrame,
@@ -628,16 +659,18 @@ def intensity_distributions(
         ks_p = stats.ks_2samp(pmin_syn, pmin_ref)
         ks_v = stats.ks_2samp(vmax_syn, vmax_ref)
 
-        result.update({
-            "ref_pmin_values": pmin_ref,
-            "ref_pmin_cdf": ecdf(pmin_ref),
-            "ref_vmax_values": vmax_ref,
-            "ref_vmax_cdf": ecdf(vmax_ref),
-            "ks_pmin": float(ks_p.statistic),
-            "ks_pmin_pvalue": float(ks_p.pvalue),
-            "ks_vmax": float(ks_v.statistic),
-            "ks_vmax_pvalue": float(ks_v.pvalue),
-        })
+        result.update(
+            {
+                "ref_pmin_values": pmin_ref,
+                "ref_pmin_cdf": ecdf(pmin_ref),
+                "ref_vmax_values": vmax_ref,
+                "ref_vmax_cdf": ecdf(vmax_ref),
+                "ks_pmin": float(ks_p.statistic),
+                "ks_pmin_pvalue": float(ks_p.pvalue),
+                "ks_vmax": float(ks_v.statistic),
+                "ks_vmax_pvalue": float(ks_v.pvalue),
+            }
+        )
 
     return result
 
@@ -701,6 +734,7 @@ def lifetime_distribution(catalog: pd.DataFrame) -> pd.DataFrame:
 
 # ---------- 6. Landfall counts ----------
 
+
 def landfall_counts(catalog: pd.DataFrame, n_years: int) -> dict:
     """
     Mean annual number of landfall events.
@@ -723,6 +757,7 @@ def landfall_counts(catalog: pd.DataFrame, n_years: int) -> dict:
 
 
 # ---------- 7. Landfall intensity ----------
+
 
 def landfall_intensity(
     catalog: pd.DataFrame,
@@ -753,26 +788,31 @@ def landfall_intensity(
     }
 
     if reference is not None:
-        ref_storms = _per_storm_agg(reference) if "pmin" not in reference.columns else reference
+        ref_storms = (
+            _per_storm_agg(reference) if "pmin" not in reference.columns else reference
+        )
         ref_lf = ref_storms.dropna(subset=["lf_pressure"])
         if len(ref_lf) > 0:
             ref_pmin = np.sort(ref_lf["lf_pressure"].values)
             ref_vmax = np.sort(ref_lf["lf_wind"].values)
             ks_p = stats.ks_2samp(pmin_lf, ref_pmin) if len(pmin_lf) > 0 else None
             ks_v = stats.ks_2samp(vmax_lf, ref_vmax) if len(vmax_lf) > 0 else None
-            result.update({
-                "ref_lf_pmin_values": ref_pmin,
-                "ref_lf_vmax_values": ref_vmax,
-                "ks_lf_pmin": float(ks_p.statistic) if ks_p else np.nan,
-                "ks_lf_pmin_pvalue": float(ks_p.pvalue) if ks_p else np.nan,
-                "ks_lf_vmax": float(ks_v.statistic) if ks_v else np.nan,
-                "ks_lf_vmax_pvalue": float(ks_v.pvalue) if ks_v else np.nan,
-            })
+            result.update(
+                {
+                    "ref_lf_pmin_values": ref_pmin,
+                    "ref_lf_vmax_values": ref_vmax,
+                    "ks_lf_pmin": float(ks_p.statistic) if ks_p else np.nan,
+                    "ks_lf_pmin_pvalue": float(ks_p.pvalue) if ks_p else np.nan,
+                    "ks_lf_vmax": float(ks_v.statistic) if ks_v else np.nan,
+                    "ks_lf_vmax_pvalue": float(ks_v.pvalue) if ks_v else np.nan,
+                }
+            )
 
     return result
 
 
 # ---------- 8. Return periods at coastal cities ----------
+
 
 def _extract_city_max_winds(
     catalog: pd.DataFrame,
@@ -845,7 +885,9 @@ def return_periods_at_city(
     """
     winds = _extract_city_max_winds(catalog, city_lat, city_lon, radius_km, min_wind)
     if len(winds) == 0:
-        return pd.DataFrame(columns=["wind_ms", "rank", "exceedance_prob", "return_period_yr"])
+        return pd.DataFrame(
+            columns=["wind_ms", "rank", "exceedance_prob", "return_period_yr"]
+        )
 
     winds_sorted = np.sort(winds)[::-1]  # descending
     n_events = len(winds_sorted)
@@ -857,12 +899,14 @@ def return_periods_at_city(
     annual_exc = weibull_prob * (n_events / n_years)
     rp = 1.0 / annual_exc
 
-    return pd.DataFrame({
-        "wind_ms": winds_sorted,
-        "rank": ranks,
-        "exceedance_prob": annual_exc,
-        "return_period_yr": rp,
-    })
+    return pd.DataFrame(
+        {
+            "wind_ms": winds_sorted,
+            "rank": ranks,
+            "exceedance_prob": annual_exc,
+            "return_period_yr": rp,
+        }
+    )
 
 
 def return_periods_at_cities(
@@ -872,7 +916,7 @@ def return_periods_at_cities(
     radius_km: float = 111.0,
     min_wind: float = 18.0,
     target_rp: Optional[np.ndarray] = None,
-    model : str | None = None,
+    model: str | None = None,
 ) -> pd.DataFrame:
     """
     Compute return-period curves at multiple cities, optionally
@@ -896,6 +940,10 @@ def return_periods_at_cities(
         DataFrame pivoted: rows = target_rp, columns = city names,
         values = interpolated wind speed (m/s).
     """
+    if not HAS_CLIMADA:
+        raise ImportError(
+            "CLIMADA is required for Holland 2008 return periods. pip install climada"
+        )
     if cities is None:
         cities = DEFAULT_CITIES
     if target_rp is not None:
@@ -906,9 +954,8 @@ def return_periods_at_cities(
     interp_rows = []
     wide_frames = []
 
-
     for basin in np.unique([i["basin"] for i in cities]):
-        basin_cities = [i for i in cities if i["basin"]==basin]
+        basin_cities = [i for i in cities if i["basin"] == basin]
         city_df = (
             pd.DataFrame(basin_cities)
             .drop_duplicates(subset=["city", "lat", "lon"])
@@ -921,7 +968,11 @@ def return_periods_at_cities(
             crs="EPSG:4326",
         )
 
-        scenarios = [TCTracks.from_simulations_storm(i) for i in catalog if "_" + basin + "_" in i.split("/")[-1]]
+        scenarios = [
+            TCTracks.from_simulations_storm(i)
+            for i in catalog
+            if "_" + basin + "_" in i.split("/")[-1]
+        ]
         pooled_tracks = pool_tctracks(scenarios, deduplicate=False)
         haz = TropCyclone.from_tracks(
             pooled_tracks,
@@ -931,8 +982,9 @@ def return_periods_at_cities(
         )
         haz.check()
 
-
-        eff_years = float(len(scenarios) * 1_000) #1_000 is the number of years per file
+        eff_years = float(
+            len(scenarios) * 1_000
+        )  # 1_000 is the number of years per file
         haz.frequency = np.full(haz.size, 1.0 / eff_years)
         haz.frequency_unit = "1/year"
 
@@ -942,7 +994,7 @@ def return_periods_at_cities(
             min_intensity=0,
             log_frequency=True,
             log_intensity=True,
-            #bin_decimals=bin_decimals,
+            # bin_decimals=bin_decimals,
         )
 
         rp_cols = [str(rp) for rp in target_rp]
@@ -967,10 +1019,175 @@ def return_periods_at_cities(
         value_name="wind_ms",
     )
     curves_long["return_period"] = curves_long["return_period"].astype(float)
-    curves_long = curves_long.sort_values(
-        ["city", "return_period"]
-    ).reset_index(drop=True)
+    curves_long = curves_long.sort_values(["city", "return_period"]).reset_index(
+        drop=True
+    )
 
+    return curves_long
+
+
+def return_periods_all_catalog(
+    phase_folders: Dict[str, str],
+    basin: str,
+    total_years: int = 10_000,
+    cities: Optional[List[dict]] = None,
+    target_rp: Optional[np.ndarray] = None,
+    model: str = "H08",
+    min_wind: float = 18.0,
+    oni_df: Optional[pd.DataFrame] = None,
+    seed: int = 42,
+    file_pattern: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Compute return periods for the composite ALL catalog using
+    ENSO-weighted year sampling via CLIMADA Holland 2008.
+
+    Instead of loading all years from all files, this function
+    replicates the §5.3 weighting:
+      1. Compute Y_ph = f_ph × total_years for each ENSO phase
+      2. For each phase, discover STORM files and randomly select
+         Y_ph year-indices across those files
+      3. Load only the selected years via
+         TCTracks.from_simulations_storm(path, years=[...])
+      4. Pool tracks, set frequency = 1/total_years per event
+      5. Run CLIMADA TropCyclone.from_tracks() with Holland 2008
+
+    Parameters
+    ----------
+    phase_folders : {"EN": "/path/", "NEU": "/path/", "LN": "/path/"}
+    basin : basin code
+    total_years : target ALL catalog length
+    cities : list of dicts with "city", "lat", "lon", "basin"
+    target_rp : return period values (years)
+    model : parametric wind model (default "H08")
+    seed : random seed for reproducible sampling
+
+    Returns
+    -------
+    curves_long : DataFrame with columns
+        [basin, city, lat, lon, return_period, wind_ms]
+    """
+    if not HAS_CLIMADA:
+        raise ImportError("CLIMADA required for return_periods_all_catalog")
+
+    if cities is None:
+        cities = [c for c in DEFAULT_CITIES if c.get("basin") == basin]
+    if target_rp is None:
+        target_rp = np.array([2, 5, 10, 25, 50, 100, 250, 500, 1000])
+    target_rp = np.asarray(target_rp)
+
+    fracs = compute_phase_fractions(basin, oni_df)
+    rng = np.random.default_rng(seed)
+
+    # ── Compute years to draw per phase ──
+    raw = {ph: fracs[ph] * total_years for ph in ("EN", "NEU", "LN")}
+    phase_n = {ph: int(np.round(v)) for ph, v in raw.items()}
+    diff = total_years - sum(phase_n.values())
+    if diff != 0:
+        remainders = {ph: raw[ph] - int(raw[ph]) for ph in phase_n}
+        for i, ph in enumerate(
+            sorted(remainders, key=remainders.get, reverse=(diff > 0))
+        ):
+            if i >= abs(diff):
+                break
+            phase_n[ph] += int(np.sign(diff))
+
+    # ── Discover files and sample years ──
+    all_tracks = []
+    for ph in ("EN", "NEU", "LN"):
+        n_draw = phase_n[ph]
+        if n_draw == 0:
+            continue
+
+        files = _find_catalog_files(phase_folders[ph], basin, ph, file_pattern)
+        if not files:
+            warnings.warn(f"No files for phase {ph} in {phase_folders[ph]}")
+            continue
+
+        # Each file has 1000 years (indices 0–999).
+        # Build pool of (file_path, local_year_idx) pairs.
+        year_pool = [(f, y) for f in files for y in range(1000)]
+        if len(year_pool) < n_draw:
+            warnings.warn(
+                f"Phase {ph}: need {n_draw} years but only "
+                f"{len(year_pool)} available; sampling with replacement."
+            )
+            chosen_idx = rng.choice(len(year_pool), size=n_draw, replace=True)
+        else:
+            chosen_idx = rng.choice(len(year_pool), size=n_draw, replace=False)
+
+        # Group selected years by file
+        file_years: Dict[str, list] = {}
+        for idx in chosen_idx:
+            fpath, yr = year_pool[idx]
+            file_years.setdefault(fpath, []).append(yr)
+
+        # Load via CLIMADA with year filtering
+        for fpath, years_list in file_years.items():
+            tc = TCTracks.from_simulations_storm(fpath, years=sorted(years_list))
+            all_tracks.extend(tc.data)
+
+    if not all_tracks:
+        warnings.warn("No tracks loaded for ALL catalog RP computation")
+        return pd.DataFrame()
+
+    pooled = TCTracks(data=all_tracks)
+    print(f"  ALL RP: {len(pooled.data)} tracks from {total_years} effective years")
+
+    # ── Compute hazard per basin ──
+    basin_cities = [c for c in cities if c.get("basin") == basin]
+    if not basin_cities:
+        basin_cities = cities  # use all if no basin tag
+
+    city_df = (
+        pd.DataFrame(basin_cities)
+        .drop_duplicates(subset=["city", "lat", "lon"])
+        .reset_index(drop=True)
+    )
+    centroids = Centroids(
+        lat=city_df["lat"].to_numpy(),
+        lon=city_df["lon"].to_numpy(),
+        crs="EPSG:4326",
+    )
+
+    haz = TropCyclone.from_tracks(
+        pooled,
+        centroids=centroids,
+        model=model,
+        intensity_thres=min_wind,
+    )
+    haz.check()
+    haz.frequency = np.full(haz.size, 1.0 / float(total_years))
+    haz.frequency_unit = "1/year"
+
+    gdf_rp, _, _ = haz.local_exceedance_intensity(
+        return_periods=target_rp,
+        method="interpolate",
+        min_intensity=0,
+        log_frequency=True,
+        log_intensity=True,
+    )
+
+    rp_cols = [str(rp) for rp in target_rp]
+    wide = pd.concat(
+        [
+            pd.DataFrame({"basin": [basin] * len(city_df)}),
+            city_df[["city", "lat", "lon"]].reset_index(drop=True),
+            gdf_rp[rp_cols].reset_index(drop=True),
+        ],
+        axis=1,
+    )
+    wide.columns = ["basin", "city", "lat", "lon"] + target_rp.tolist()
+
+    curves_long = wide.melt(
+        id_vars=["basin", "city", "lat", "lon"],
+        var_name="return_period",
+        value_name="wind_ms",
+    )
+    curves_long["return_period"] = curves_long["return_period"].astype(float)
+    curves_long = curves_long.sort_values(["city", "return_period"]).reset_index(
+        drop=True
+    )
 
     return curves_long
 
@@ -978,6 +1195,7 @@ def return_periods_at_cities(
 # ═══════════════════════════════════════════════════════════════════════
 # ACE  (bonus metric, used in your notebook already)
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def ace_density(
     catalog: pd.DataFrame,
@@ -1000,7 +1218,7 @@ def ace_density(
     # ACE contribution per fix: V² * (dt / 6) in (m/s)²·h
     # Convert 10-min m/s to knots: ×1.9438
     wind_kn = catalog["wind"].values * 1.9438
-    ace_fix = wind_kn ** 2 * (dt_hours / 6.0)  # ×10^{-4} below
+    ace_fix = wind_kn**2 * (dt_hours / 6.0)  # ×10^{-4} below
 
     if lon_range is None:
         lon_range = (np.floor(lons.min()), np.ceil(lons.max()))
@@ -1127,6 +1345,7 @@ def export_all_densities(
 # COMBINED METRIC COMPUTATION
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def compute_all_metrics(
     catalog: pd.DataFrame,
     n_years: int,
@@ -1175,10 +1394,14 @@ def compute_all_metrics(
     # §5.4.1
     results["genesis_count"] = annual_genesis_count(catalog, n_years)
 
-    gd, glon, glat = genesis_density(catalog, n_years, grid_resolution, lon_range, lat_range)
+    gd, glon, glat = genesis_density(
+        catalog, n_years, grid_resolution, lon_range, lat_range
+    )
     results["genesis_density"] = {"density": gd, "lon_edges": glon, "lat_edges": glat}
 
-    td, tlon, tlat = track_density(catalog, n_years, grid_resolution, lon_range, lat_range)
+    td, tlon, tlat = track_density(
+        catalog, n_years, grid_resolution, lon_range, lat_range
+    )
     results["track_density"] = {"density": td, "lon_edges": tlon, "lat_edges": tlat}
 
     results["intensity"] = intensity_distributions(catalog, reference)
@@ -1192,7 +1415,10 @@ def compute_all_metrics(
         if target_rp is None:
             target_rp = np.array([2, 5, 10, 25, 50, 100, 250, 500, 1000])
         results["return_periods"] = return_periods_at_cities(
-            file_paths, n_years, cities, target_rp=target_rp,
+            file_paths,
+            n_years,
+            cities,
+            target_rp=target_rp,
         )
 
     # Bonus
@@ -1206,6 +1432,7 @@ def compute_all_metrics(
 # ═══════════════════════════════════════════════════════════════════════
 # MULTI-CANDIDATE COMPARISON
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def compare_candidates(
     candidates: Dict[str, dict],
@@ -1236,16 +1463,22 @@ def compare_candidates(
 
     for name, spec in candidates.items():
         cat, files = load_catalog(
-            spec["folder"], basin,
+            spec["folder"],
+            basin,
             phase=spec.get("phase"),
             file_pattern=spec.get("file_pattern"),
         )
         n_years = spec["n_years"]
 
         m = compute_all_metrics(
-            cat, n_years, basin=basin,
-            reference=reference, ref_n_years=ref_n_years,
-            cities=cities, target_rp=target_rp, file_paths=files,
+            cat,
+            n_years,
+            basin=basin,
+            reference=reference,
+            ref_n_years=ref_n_years,
+            cities=cities,
+            target_rp=target_rp,
+            file_paths=files,
         )
 
         row = {"candidate": name}
@@ -1858,7 +2091,8 @@ def plot_return_period_curves(
     n = len(cities)
     nrows = int(np.ceil(n / ncols))
     fig, axes = plt.subplots(
-        nrows, ncols,
+        nrows,
+        ncols,
         figsize=(figsize_per_ax[0] * ncols, figsize_per_ax[1] * nrows),
         squeeze=False,
     )
@@ -1866,7 +2100,10 @@ def plot_return_period_curves(
     for i, city in enumerate(cities):
         ax = axes[i // ncols, i % ncols]
         sub = rp_table[rp_table[city_col] == city]
-        ax.scatter(sub["return_period_yr"], sub["wind_ms"], s=8, **scatter_kw)
+        rp_col = (
+            "return_period" if "return_period" in sub.columns else "return_period_yr"
+        )
+        ax.scatter(sub[rp_col], sub["wind_ms"], s=8, **scatter_kw)
         ax.set_xscale("log")
         ax.set_xlabel("Return period (yr)")
         ax.set_ylabel("Wind speed (m/s)")
@@ -1879,6 +2116,7 @@ def plot_return_period_curves(
 
     fig.tight_layout()
     return fig, axes
+
 
 def plot_lifetime_distribution(
     lifetime_dfs: Dict[str, pd.DataFrame],
@@ -2003,30 +2241,41 @@ def run_all_plots(
 # CONVENIENCE: print a text summary
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def print_summary(metrics: dict, label: str = "Catalog"):
     """Pretty-print the scalar metrics from compute_all_metrics()."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {label}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     g = metrics["genesis_count"]
-    print(f"  Genesis count  : λ̂ = {g['mean']:.2f} ± {g['std']:.2f}  "
-          f"(total {g['total_storms']} storms / {g['n_years']} yr)")
+    print(
+        f"  Genesis count  : λ̂ = {g['mean']:.2f} ± {g['std']:.2f}  "
+        f"(total {g['total_storms']} storms / {g['n_years']} yr)"
+    )
 
     lt = metrics["lifetime"]
-    print(f"  TC lifetime    : {lt['mean_steps']:.1f} steps "
-          f"({lt['mean_hours']:.0f} h)  median {lt['median_steps']:.0f}")
+    print(
+        f"  TC lifetime    : {lt['mean_steps']:.1f} steps "
+        f"({lt['mean_hours']:.0f} h)  median {lt['median_steps']:.0f}"
+    )
 
     lf = metrics["landfall_counts"]
-    print(f"  Landfall rate  : {lf['annual_mean']:.2f} ± {lf['annual_std']:.2f} /yr  "
-          f"(total {lf['total_landfalls']})")
+    print(
+        f"  Landfall rate  : {lf['annual_mean']:.2f} ± {lf['annual_std']:.2f} /yr  "
+        f"(total {lf['total_landfalls']})"
+    )
 
     inten = metrics["intensity"]
     if "ks_pmin" in inten:
-        print(f"  KS (Pmin)      : D = {inten['ks_pmin']:.4f}  "
-              f"p = {inten['ks_pmin_pvalue']:.2e}")
-        print(f"  KS (Vmax)      : D = {inten['ks_vmax']:.4f}  "
-              f"p = {inten['ks_vmax_pvalue']:.2e}")
+        print(
+            f"  KS (Pmin)      : D = {inten['ks_pmin']:.4f}  "
+            f"p = {inten['ks_pmin_pvalue']:.2e}"
+        )
+        print(
+            f"  KS (Vmax)      : D = {inten['ks_vmax']:.4f}  "
+            f"p = {inten['ks_vmax_pvalue']:.2e}"
+        )
 
     lfi = metrics["landfall_intensity"]
     if "ks_lf_pmin" in lfi:
@@ -2046,6 +2295,7 @@ def print_summary(metrics: dict, label: str = "Catalog"):
 # CLI ENTRY POINT  (optional)
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def main():
     """
     Example usage from command line:
@@ -2055,14 +2305,22 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="SIENA-IH-STORM Evaluation")
-    parser.add_argument("--folder", required=True, help="Directory with STORM .txt files")
+    parser.add_argument(
+        "--folder", required=True, help="Directory with STORM .txt files"
+    )
     parser.add_argument("--basin", required=True, choices=list(BASIN_ID_MAP.keys()))
-    parser.add_argument("--phase", default=None, help="ENSO phase (EN, NEU, LN) or omit for B0")
+    parser.add_argument(
+        "--phase", default=None, help="ENSO phase (EN, NEU, LN) or omit for B0"
+    )
     parser.add_argument("--n_years", type=int, default=10_000)
-    parser.add_argument("--ref_folder", default=None, help="Optional reference catalog folder")
+    parser.add_argument(
+        "--ref_folder", default=None, help="Optional reference catalog folder"
+    )
     parser.add_argument("--ref_phase", default=None)
     parser.add_argument("--ref_n_years", type=int, default=None)
-    parser.add_argument("--resolution", type=float, default=1.0, help="Grid resolution (deg)")
+    parser.add_argument(
+        "--resolution", type=float, default=1.0, help="Grid resolution (deg)"
+    )
     parser.add_argument("--out_csv", default=None, help="Save scalar summary to CSV")
 
     args = parser.parse_args()
@@ -2077,7 +2335,8 @@ def main():
         ref, _ = load_catalog(args.ref_folder, args.basin, phase=args.ref_phase)
 
     metrics = compute_all_metrics(
-        cat, args.n_years,
+        cat,
+        args.n_years,
         basin=args.basin,
         reference=ref,
         ref_n_years=args.ref_n_years,
