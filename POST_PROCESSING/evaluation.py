@@ -366,7 +366,7 @@ def assemble_all_catalog(
     oni_df: Optional[pd.DataFrame] = None,
     file_pattern: Optional[str] = None,
     seed: int = 42,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, list[str]]:
     """
     Build the composite ALL catalog (§5.3) by drawing simulated years
     from phase-specific catalogs in proportion to historical ENSO
