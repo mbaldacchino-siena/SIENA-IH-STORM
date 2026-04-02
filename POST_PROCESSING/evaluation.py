@@ -1275,53 +1275,567 @@ def compare_candidates(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# PLOTTING HELPERS  (optional — requires matplotlib)
+# PLOTTING  (requires matplotlib; cartopy optional but recommended)
 # ═══════════════════════════════════════════════════════════════════════
 
-def plot_intensity_cdfs(
-    metrics_dict: dict,
-    title_suffix: str = "",
-    ax_pmin=None,
-    ax_vmax=None,
-):
+try:
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+
+    HAS_CARTOPY = True
+except ImportError:
+    HAS_CARTOPY = False
+
+# Expanded plot extents for cartopy (slightly wider than BASIN_BOUNDS)
+BASIN_PLOT_EXTENT = {
+    "EP": [175, 290, 0, 65],
+    "NA": [250, 365, 0, 65],
+    "NI": [25, 105, 0, 40],
+    "SI": [5, 140, -65, 0],
+    "SP": [130, 245, -65, 0],
+    "WP": [95, 185, 0, 65],
+}
+
+PHASE_COLORS = {
+    "EN": "#E53935",
+    "NEU": "#212121",
+    "LN": "#1E88E5",
+    "ALL": "#4CAF50",
+    "IBTrACS": "#F9A825",
+}
+PHASE_LABELS = {
+    "EN": "El Niño",
+    "NEU": "Neutral",
+    "LN": "La Niña",
+    "ALL": "All phases",
+    "IBTrACS": "IBTrACS",
+}
+
+# Saffir-Simpson thresholds in 10-min m/s (for annotations)
+SS_THRESH_10MIN = {"Cat 1": 33, "Cat 2": 43, "Cat 3": 50, "Cat 4": 58, "Cat 5": 70}
+
+
+# ── Map axis helpers ──
+
+
+def _make_map_axes(n_panels, basin, figwidth=16):
+    """Create a row of map subplots with optional cartopy."""
+    import matplotlib.pyplot as plt
+
+    ncols = min(4, n_panels) if n_panels > 2 else n_panels
+    nrows = int(np.ceil(n_panels / ncols))
+    height = figwidth / ncols * 0.6 * nrows
+    kw = {"projection": ccrs.PlateCarree()} if HAS_CARTOPY else {}
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(figwidth, height), subplot_kw=kw, squeeze=False
+    )
+    axes_flat = axes.flatten()
+    for i in range(n_panels, len(axes_flat)):
+        axes_flat[i].set_visible(False)
+    return fig, axes_flat[:n_panels]
+
+
+def _dress_map_axis(ax, basin):
+    """Add coastlines, land shading and set extent."""
+    extent = BASIN_PLOT_EXTENT.get(basin)
+    if HAS_CARTOPY:
+        if extent:
+            ax.set_extent(extent, crs=ccrs.PlateCarree())
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, linestyle=":")
+        ax.add_feature(cfeature.LAND, facecolor="#f0f0f0", zorder=0)
+    elif extent:
+        ax.set_xlim(extent[0], extent[1])
+        ax.set_ylim(extent[2], extent[3])
+
+
+def _pcolormesh(ax, grid, lat_edges, lon_edges, **kwargs):
+    """pcolormesh wrapper handling cartopy transform."""
+    import matplotlib.colors as mcolors
+
+    grid_plot = np.ma.masked_where(np.abs(grid) < 1e-12, grid)
+    transform_kw = {"transform": ccrs.PlateCarree()} if HAS_CARTOPY else {}
+    return ax.pcolormesh(
+        lon_edges, lat_edges, grid_plot, shading="flat", **transform_kw, **kwargs
+    )
+
+
+def _compute_map_grid(df, basin, mode, resolution, n_years):
     """
-    Plot Pmin and Vmax ECDFs.
+    Compute a 2-D grid from catalog data for map plotting.
 
     Parameters
     ----------
-    metrics_dict : output of intensity_distributions()
+    df : catalog DataFrame
+    mode : "genesis" | "track" | "ace"
+    resolution, n_years : grid cell size, normalization
+    Returns
+    -------
+    grid, lat_edges, lon_edges
+    """
+    lat0, lat1, lon0, lon1 = (
+        BASIN_BOUNDS[basin]["lat"][0],
+        BASIN_BOUNDS[basin]["lat"][1],
+        BASIN_BOUNDS[basin]["lon"][0],
+        BASIN_BOUNDS[basin]["lon"][1],
+    )
+    lat_edges = np.arange(lat0, lat1 + resolution, resolution)
+    lon_edges = np.arange(lon0, lon1 + resolution, resolution)
+    wind_col = "wind" if "wind" in df.columns else "wind_ms"
+
+    if mode == "genesis":
+        if "timestep" in df.columns:
+            sub = df[df["timestep"] == 0]
+        elif "global_storm_uid" in df.columns:
+            sub = df.drop_duplicates("global_storm_uid", keep="first")
+        else:
+            sub = df.drop_duplicates("storm_id", keep="first")
+        grid, _, _ = np.histogram2d(
+            sub["lat"].values, sub["lon"].values, bins=[lat_edges, lon_edges]
+        )
+    elif mode == "ace":
+        wind_kt = df[wind_col].values * 1.94384
+        weights = wind_kt**2 * 1e-4
+        grid, _, _ = np.histogram2d(
+            df["lat"].values,
+            df["lon"].values,
+            bins=[lat_edges, lon_edges],
+            weights=weights,
+        )
+    else:  # track
+        grid, _, _ = np.histogram2d(
+            df["lat"].values, df["lon"].values, bins=[lat_edges, lon_edges]
+        )
+    return grid / max(n_years, 1.0), lat_edges, lon_edges
+
+
+# ── Absolute density panel maps ──
+
+
+def plot_density_panels(
+    datasets: Dict[str, pd.DataFrame],
+    basin: str,
+    n_years_dict: Dict[str, float],
+    mode: str = "track",
+    resolution: float = 1.0,
+    outdir: str = ".",
+    cmap: Optional[str] = None,
+    figwidth: float = 16,
+):
+    """
+    Side-by-side density maps for multiple datasets/phases.
+
+    Parameters
+    ----------
+    datasets : {"EN": df, "NEU": df, "LN": df, "IBTrACS": df, ...}
+    n_years_dict : {"EN": 10000, "IBTrACS": 42, ...}
+    mode : "genesis", "track", or "ace"
     """
     import matplotlib.pyplot as plt
 
-    if ax_pmin is None or ax_vmax is None:
-        fig, (ax_pmin, ax_vmax) = plt.subplots(1, 2, figsize=(12, 5))
+    if cmap is None:
+        cmap = {"genesis": "YlOrRd", "track": "YlGnBu", "ace": "hot_r"}.get(
+            mode, "YlOrRd"
+        )
+    unit = {
+        "genesis": "storms/yr/cell",
+        "track": "fixes/yr/cell",
+        "ace": "ACE/yr/cell",
+    }.get(mode, "")
+    mode_label = {
+        "genesis": "Genesis Density",
+        "track": "Track Density",
+        "ace": "ACE Density",
+    }.get(mode, mode)
 
-    m = metrics_dict
-    ax_pmin.plot(m["pmin_values"], m["pmin_cdf"], label="Synthetic")
-    if "ref_pmin_values" in m:
-        ax_pmin.plot(m["ref_pmin_values"], m["ref_pmin_cdf"],
-                     label="IBTrACS", ls="--", color="black")
-        ax_pmin.set_title(f"Pmin CDF  (KS={m['ks_pmin']:.4f}){title_suffix}")
-    else:
-        ax_pmin.set_title(f"Pmin CDF{title_suffix}")
-    ax_pmin.set_xlabel("Minimum pressure (hPa)")
-    ax_pmin.set_ylabel("CDF")
-    ax_pmin.legend()
-    ax_pmin.grid(True, alpha=0.3)
+    n = len(datasets)
+    fig, axes = _make_map_axes(n, basin, figwidth)
 
-    ax_vmax.plot(m["vmax_values"], m["vmax_cdf"], label="Synthetic")
-    if "ref_vmax_values" in m:
-        ax_vmax.plot(m["ref_vmax_values"], m["ref_vmax_cdf"],
-                     label="IBTrACS", ls="--", color="black")
-        ax_vmax.set_title(f"Vmax CDF  (KS={m['ks_vmax']:.4f}){title_suffix}")
-    else:
-        ax_vmax.set_title(f"Vmax CDF{title_suffix}")
-    ax_vmax.set_xlabel("Maximum wind (m/s)")
-    ax_vmax.set_ylabel("CDF")
-    ax_vmax.legend()
-    ax_vmax.grid(True, alpha=0.3)
+    grids = {}
+    for label, df in datasets.items():
+        g, lat_e, lon_e = _compute_map_grid(
+            df, basin, mode, resolution, n_years_dict.get(label, 1.0)
+        )
+        grids[label] = g
 
-    return ax_pmin, ax_vmax
+    all_vals = np.concatenate([g[g > 0] for g in grids.values() if np.any(g > 0)])
+    vmax = np.percentile(all_vals, 95) if len(all_vals) > 0 else 1.0
+
+    for ax, label in zip(axes, datasets.keys()):
+        _dress_map_axis(ax, basin)
+        im = _pcolormesh(ax, grids[label], lat_e, lon_e, cmap=cmap, vmin=0, vmax=vmax)
+        ax.set_title(PHASE_LABELS.get(label, label), fontsize=11)
+
+    plt.colorbar(im, ax=list(axes), shrink=0.6, label=unit, pad=0.02)
+    fig.suptitle(f"{mode_label} — {basin} ({resolution}° grid)", fontsize=14, y=1.02)
+
+    os.makedirs(outdir, exist_ok=True)
+    outpath = os.path.join(outdir, f"validation_{mode}_{basin}.png")
+    fig.savefig(outpath, dpi=200, bbox_inches="tight")
+    print(f"  Saved: {outpath}")
+    return fig
+
+
+# ── Difference maps (3-row triplet) ──
+
+
+def plot_difference_triplet(
+    datasets_new: Dict[str, pd.DataFrame],
+    dataset_ref: pd.DataFrame,
+    basin: str,
+    n_years_new: float,
+    n_years_ref: float,
+    mode: str = "track",
+    resolution: float = 2.0,
+    datasets_old: Optional[Dict[str, pd.DataFrame]] = None,
+    n_years_old: Optional[float] = None,
+    outdir: str = ".",
+    diff_cmap: str = "RdBu_r",
+):
+    """
+    Three-row publication figure:
+      Row 0: Absolute panels  (IBTrACS + per-phase new [+ per-phase old])
+      Row 1: New − IBTrACS    (per phase)
+      Row 2: New − Old        (per phase, if old provided)
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+
+    abs_cmap = {"genesis": "YlOrRd", "track": "YlGnBu", "ace": "hot_r"}.get(
+        mode, "YlOrRd"
+    )
+    unit = {
+        "genesis": "storms/yr/cell",
+        "track": "fixes/yr/cell",
+        "ace": "ACE/yr/cell",
+    }.get(mode, "")
+    mode_label = {
+        "genesis": "Genesis Density",
+        "track": "Track Density",
+        "ace": "ACE Density",
+    }.get(mode, mode)
+
+    phases = [ph for ph in ["EN", "NEU", "LN"] if ph in datasets_new]
+    has_old = datasets_old is not None and len(datasets_old) > 0
+
+    # Compute grids
+    grids = {}
+    g_ref, lat_e, lon_e = _compute_map_grid(
+        dataset_ref, basin, mode, resolution, n_years_ref
+    )
+    grids["ibtracs"] = g_ref
+    for ph in phases:
+        g, _, _ = _compute_map_grid(
+            datasets_new[ph], basin, mode, resolution, n_years_new
+        )
+        grids[f"new_{ph}"] = g
+    if has_old:
+        for ph in phases:
+            if ph in datasets_old:
+                g, _, _ = _compute_map_grid(
+                    datasets_old[ph], basin, mode, resolution, n_years_old
+                )
+                grids[f"old_{ph}"] = g
+
+    # Layout
+    abs_panels = [("ibtracs", "IBTrACS")]
+    for ph in phases:
+        abs_panels.append((f"new_{ph}", f"SIENA {PHASE_LABELS.get(ph, ph)}"))
+    if has_old:
+        for ph in phases:
+            if f"old_{ph}" in grids:
+                abs_panels.append((f"old_{ph}", f"Old {PHASE_LABELS.get(ph, ph)}"))
+
+    ncols = max(len(abs_panels), len(phases))
+    nrows = 2 + (1 if has_old else 0)
+
+    kw = {"projection": ccrs.PlateCarree()} if HAS_CARTOPY else {}
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.5 * ncols, 3.2 * nrows + 0.8),
+        subplot_kw=kw,
+        squeeze=False,
+    )
+
+    # Row 0: Absolute
+    abs_grids = [grids[k] for k, _ in abs_panels if k in grids]
+    all_pos = (
+        np.concatenate([g[g > 0] for g in abs_grids]) if abs_grids else np.array([1])
+    )
+    vmax_abs = np.percentile(all_pos, 99) if len(all_pos) > 0 else 1.0
+    for i, (key, label) in enumerate(abs_panels):
+        if i >= ncols:
+            break
+        _dress_map_axis(axes[0, i], basin)
+        if key in grids:
+            im0 = _pcolormesh(
+                axes[0, i],
+                grids[key],
+                lat_e,
+                lon_e,
+                cmap=abs_cmap,
+                vmin=0,
+                vmax=vmax_abs,
+            )
+        axes[0, i].set_title(label, fontsize=9)
+    plt.colorbar(im0, ax=axes[0, :].tolist(), shrink=0.6, label=unit, pad=0.02)
+    for i in range(len(abs_panels), ncols):
+        axes[0, i].set_visible(False)
+
+    # Row 1: New − IBTrACS
+    diff1 = []
+    for ph in phases:
+        key = f"new_{ph}"
+        if key in grids:
+            shape = (
+                min(grids[key].shape[0], g_ref.shape[0]),
+                min(grids[key].shape[1], g_ref.shape[1]),
+            )
+            d = grids[key][: shape[0], : shape[1]] - g_ref[: shape[0], : shape[1]]
+            diff1.append((d, f"SIENA−IBTrACS ({PHASE_LABELS.get(ph, ph)})"))
+
+    vlim1 = (
+        max(
+            (np.percentile(np.abs(d[d != 0]), 99) if np.any(d != 0) else 0.01)
+            for d, _ in diff1
+        )
+        if diff1
+        else 0.01
+    )
+    vlim1 = max(vlim1, 0.01)
+    for i, (d, label) in enumerate(diff1):
+        _dress_map_axis(axes[1, i], basin)
+        im1 = _pcolormesh(
+            axes[1, i],
+            d,
+            lat_e,
+            lon_e,
+            cmap=diff_cmap,
+            norm=mcolors.TwoSlopeNorm(vcenter=0, vmin=-vlim1, vmax=vlim1),
+        )
+        axes[1, i].set_title(label, fontsize=9)
+    plt.colorbar(im1, ax=axes[1, :].tolist(), shrink=0.6, label=f"Δ {unit}", pad=0.02)
+    for i in range(len(diff1), ncols):
+        axes[1, i].set_visible(False)
+
+    # Row 2: New − Old
+    if has_old:
+        diff2 = []
+        for ph in phases:
+            k_new, k_old = f"new_{ph}", f"old_{ph}"
+            if k_new in grids and k_old in grids:
+                shape = (
+                    min(grids[k_new].shape[0], grids[k_old].shape[0]),
+                    min(grids[k_new].shape[1], grids[k_old].shape[1]),
+                )
+                d = (
+                    grids[k_new][: shape[0], : shape[1]]
+                    - grids[k_old][: shape[0], : shape[1]]
+                )
+                diff2.append((d, f"SIENA−Old ({PHASE_LABELS.get(ph, ph)})"))
+        if diff2:
+            vlim2 = max(
+                (np.percentile(np.abs(d[d != 0]), 99) if np.any(d != 0) else 0.01)
+                for d, _ in diff2
+            )
+            vlim2 = max(vlim2, 0.01)
+            for i, (d, label) in enumerate(diff2):
+                _dress_map_axis(axes[2, i], basin)
+                im2 = _pcolormesh(
+                    axes[2, i],
+                    d,
+                    lat_e,
+                    lon_e,
+                    cmap=diff_cmap,
+                    norm=mcolors.TwoSlopeNorm(vcenter=0, vmin=-vlim2, vmax=vlim2),
+                )
+                axes[2, i].set_title(label, fontsize=9)
+            plt.colorbar(
+                im2, ax=axes[2, :].tolist(), shrink=0.6, label=f"Δ {unit}", pad=0.02
+            )
+        for i in range(len(diff2) if diff2 else 0, ncols):
+            axes[2, i].set_visible(False)
+
+    fig.suptitle(f"{mode_label} — {basin} ({resolution}° grid)", fontsize=14, y=1.01)
+    os.makedirs(outdir, exist_ok=True)
+    safe = mode_label.lower().replace(" ", "_")
+    outpath = os.path.join(outdir, f"diff_{safe}_{basin}.png")
+    fig.savefig(outpath, dpi=200, bbox_inches="tight")
+    print(f"  Saved: {outpath}")
+    return fig
+
+
+# ── LMI distribution ──
+
+
+def plot_lmi_distribution(
+    datasets: Dict[str, pd.DataFrame],
+    basin: str,
+    outdir: str = ".",
+):
+    """
+    Per-storm lifetime maximum intensity histogram, overlaid.
+    datasets : {"EN": catalog_df, "IBTrACS": catalog_df, ...}
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    wind_col = "wind" if "wind" in list(datasets.values())[0].columns else "wind_ms"
+    bins = np.arange(15, 95, 2.5)
+
+    for label, df in datasets.items():
+        uid_col = (
+            "global_storm_uid" if "global_storm_uid" in df.columns else "storm_uid"
+        )
+        if uid_col in df.columns:
+            lmi = df.groupby(uid_col)[wind_col].max().dropna()
+        else:
+            lmi = _per_storm_agg(df)["vmax"].dropna()
+        color = PHASE_COLORS.get(label, "gray")
+        display = PHASE_LABELS.get(label, label)
+        ax.hist(
+            lmi.values,
+            bins=bins,
+            density=True,
+            alpha=0.35,
+            label=display,
+            color=color,
+            edgecolor=color,
+            linewidth=0.8,
+        )
+        counts, edges = np.histogram(lmi.values, bins=bins, density=True)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        ax.plot(centers, counts, color=color, linewidth=2)
+
+    for cat_label, v in SS_THRESH_10MIN.items():
+        ax.axvline(v, color="gray", ls=":", alpha=0.5, lw=0.8)
+        ax.text(
+            v + 0.5,
+            ax.get_ylim()[1] * 0.95,
+            cat_label,
+            fontsize=7,
+            color="gray",
+            va="top",
+            rotation=90,
+        )
+
+    ax.set_xlabel("Lifetime Maximum Intensity [m/s, 10-min sustained]")
+    ax.set_ylabel("Probability density")
+    ax.set_title(f"LMI Distribution — {basin}")
+    ax.legend(frameon=False)
+    ax.set_xlim(15, 85)
+    ax.grid(True, alpha=0.2)
+    fig.tight_layout()
+
+    os.makedirs(outdir, exist_ok=True)
+    outpath = os.path.join(outdir, f"validation_lmi_{basin}.png")
+    fig.savefig(outpath, dpi=200, bbox_inches="tight")
+    print(f"  Saved: {outpath}")
+    return fig
+
+
+# ── Wind-pressure scatter ──
+
+
+def plot_wind_pressure_scatter(
+    datasets: Dict[str, pd.DataFrame],
+    basin: str,
+    outdir: str = ".",
+    max_points: int = 50_000,
+):
+    """Wind vs pressure scatter with WPR reference curves overlaid."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    wind_col = "wind" if "wind" in list(datasets.values())[0].columns else "wind_ms"
+
+    for label, df in datasets.items():
+        mask = (df["pressure"] > 850) & (df["pressure"] < 1020) & (df[wind_col] > 10)
+        sub = df[mask]
+        if len(sub) > max_points:
+            sub = sub.sample(max_points, random_state=42)
+        color = PHASE_COLORS.get(label, "gray")
+        display = PHASE_LABELS.get(label, label)
+        ax.scatter(
+            sub["pressure"],
+            sub[wind_col],
+            s=1,
+            alpha=0.08,
+            color=color,
+            rasterized=True,
+        )
+        ax.scatter([], [], s=30, color=color, label=display, alpha=0.8)
+
+    dp = np.linspace(1, 120, 200)
+    for a, b, ls, wpr_lbl in [
+        (0.7, 0.62, "-", r"WPR: V=0.70·ΔP$^{0.62}$"),
+        (0.6, 0.65, "--", r"WPR: V=0.60·ΔP$^{0.65}$"),
+    ]:
+        ax.plot(
+            1013 - dp, a * dp**b, ls, color="black", lw=1.5, alpha=0.6, label=wpr_lbl
+        )
+
+    ax.set_xlabel("Central pressure [hPa]")
+    ax.set_ylabel("Maximum wind speed [m/s, 10-min]")
+    ax.set_title(f"Wind-Pressure Relationship — {basin}")
+    ax.set_xlim(880, 1020)
+    ax.set_ylim(10, 85)
+    ax.legend(frameon=False, fontsize=8, markerscale=2)
+    ax.grid(True, alpha=0.2)
+    ax.invert_xaxis()
+    fig.tight_layout()
+
+    os.makedirs(outdir, exist_ok=True)
+    outpath = os.path.join(outdir, f"validation_wpr_{basin}.png")
+    fig.savefig(outpath, dpi=200, bbox_inches="tight")
+    print(f"  Saved: {outpath}")
+    return fig
+
+
+# ── Intensity CDFs per phase ──
+
+
+def plot_intensity_cdfs(
+    datasets: Dict[str, pd.DataFrame],
+    basin: str,
+    outdir: str = ".",
+):
+    """ECDF of lifetime Pmin and Vmax, one curve per dataset/phase."""
+    import matplotlib.pyplot as plt
+
+    fig, (ax_p, ax_v) = plt.subplots(1, 2, figsize=(14, 5))
+    wind_col = "wind" if "wind" in list(datasets.values())[0].columns else "wind_ms"
+    ecdf = lambda x: np.arange(1, len(x) + 1) / len(x)
+
+    for label, df in datasets.items():
+        storms = _per_storm_agg(df)
+        color = PHASE_COLORS.get(label, "gray")
+        display = PHASE_LABELS.get(label, label)
+
+        pmin = np.sort(storms["pmin"].dropna().values)
+        vmax_vals = np.sort(storms["vmax"].dropna().values)
+        ax_p.plot(pmin, ecdf(pmin), color=color, label=display, lw=1.5)
+        ax_v.plot(vmax_vals, ecdf(vmax_vals), color=color, label=display, lw=1.5)
+
+    ax_p.set_xlabel("Minimum central pressure (hPa)")
+    ax_p.set_ylabel("CDF")
+    ax_p.set_title(f"Lifetime Pmin — {basin}")
+    ax_p.legend(frameon=False, fontsize=8)
+    ax_p.grid(True, alpha=0.2)
+
+    ax_v.set_xlabel("Maximum wind speed (m/s, 10-min)")
+    ax_v.set_ylabel("CDF")
+    ax_v.set_title(f"Lifetime Vmax — {basin}")
+    ax_v.legend(frameon=False, fontsize=8)
+    ax_v.grid(True, alpha=0.2)
+
+    fig.tight_layout()
+    os.makedirs(outdir, exist_ok=True)
+    outpath = os.path.join(outdir, f"validation_cdfs_{basin}.png")
+    fig.savefig(outpath, dpi=200, bbox_inches="tight")
+    print(f"  Saved: {outpath}")
+    return fig
 
 
 def plot_return_period_curves(
@@ -1365,132 +1879,6 @@ def plot_return_period_curves(
 
     fig.tight_layout()
     return fig, axes
-
-
-def plot_density_map(
-    density: np.ndarray,
-    lon_edges: np.ndarray,
-    lat_edges: np.ndarray,
-    title: str = "",
-    cmap: str = "YlOrRd",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    ax=None,
-):
-    """Simple pcolormesh density map (no cartopy required)."""
-    import matplotlib.pyplot as plt
-
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 5))
-    lon_c = 0.5 * (lon_edges[:-1] + lon_edges[1:])
-    lat_c = 0.5 * (lat_edges[:-1] + lat_edges[1:])
-    LON, LAT = np.meshgrid(lon_c, lat_c)
-    im = ax.pcolormesh(LON, LAT, density, cmap=cmap, vmin=vmin, vmax=vmax, shading="auto")
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.set_title(title)
-    plt.colorbar(im, ax=ax, shrink=0.7)
-    return ax
-
-
-def plot_all_densities(
-    metrics: dict,
-    label: str = "",
-    figsize: Tuple[float, float] = (18, 5),
-):
-    """
-    Three-panel figure: genesis density, track density, ACE density.
-
-    Parameters
-    ----------
-    metrics : output of compute_all_metrics()
-    label : title suffix (e.g. "S3 / LN / NA")
-
-    Returns
-    -------
-    fig, axes
-    """
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(1, 3, figsize=figsize)
-
-    gd = metrics["genesis_density"]
-    plot_density_map(
-        gd["density"],
-        gd["lon_edges"],
-        gd["lat_edges"],
-        title=f"Genesis density  {label}",
-        cmap="YlOrRd",
-        ax=axes[0],
-    )
-
-    td = metrics["track_density"]
-    plot_density_map(
-        td["density"],
-        td["lon_edges"],
-        td["lat_edges"],
-        title=f"Track density  {label}",
-        cmap="YlGnBu",
-        ax=axes[1],
-    )
-
-    ad = metrics["ace_density"]
-    plot_density_map(
-        ad["density"],
-        ad["lon_edges"],
-        ad["lat_edges"],
-        title=f"ACE density  {label}",
-        cmap="hot_r",
-        ax=axes[2],
-    )
-
-    fig.tight_layout()
-    return fig, axes
-
-
-def plot_density_difference(
-    metrics_a: dict,
-    metrics_b: dict,
-    field: str = "track_density",
-    label_a: str = "A",
-    label_b: str = "B",
-    cmap: str = "RdBu_r",
-    vabs: Optional[float] = None,
-    ax=None,
-):
-    """
-    Plot the difference map (A − B) for a given density field.
-
-    Parameters
-    ----------
-    metrics_a, metrics_b : outputs of compute_all_metrics()
-    field : "genesis_density", "track_density", or "ace_density"
-    vabs : symmetric color limit; if None, auto-scaled
-    """
-    import matplotlib.pyplot as plt
-
-    da = metrics_a[field]
-    db = metrics_b[field]
-    diff = da["density"] - db["density"]
-
-    if vabs is None:
-        vabs = float(np.nanmax(np.abs(diff)))
-
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 5))
-
-    plot_density_map(
-        diff,
-        da["lon_edges"],
-        da["lat_edges"],
-        title=f"{field}:  {label_a} − {label_b}",
-        cmap=cmap,
-        vmin=-vabs,
-        vmax=vabs,
-        ax=ax,
-    )
-    return ax
-
 
 def plot_lifetime_distribution(
     lifetime_dfs: Dict[str, pd.DataFrame],
@@ -1537,6 +1925,78 @@ def plot_lifetime_distribution(
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig, ax
+
+
+# ── Generate full validation suite ──
+
+
+def run_all_plots(
+    datasets: Dict[str, pd.DataFrame],
+    n_years_dict: Dict[str, float],
+    basin: str,
+    outdir: str = "validation_plots",
+    resolution_density: float = 2.0,
+    resolution_track: float = 1.0,
+    dataset_ref: Optional[pd.DataFrame] = None,
+    n_years_ref: Optional[float] = None,
+    datasets_old: Optional[Dict[str, pd.DataFrame]] = None,
+    n_years_old: Optional[float] = None,
+):
+    """
+    Generate the full validation plot suite for one basin.
+
+    Parameters
+    ----------
+    datasets : {"EN": df, "NEU": df, "LN": df}
+    n_years_dict : {"EN": 10000, ...}
+    dataset_ref : IBTrACS reference catalog (optional)
+    datasets_old : old model catalogs for difference maps (optional)
+    """
+    os.makedirs(outdir, exist_ok=True)
+    all_ds = dict(datasets)
+    all_ny = dict(n_years_dict)
+    if dataset_ref is not None:
+        all_ds["IBTrACS"] = dataset_ref
+        all_ny["IBTrACS"] = n_years_ref or 42
+
+    for mode, res in [
+        ("genesis", resolution_density),
+        ("track", resolution_track),
+        ("ace", resolution_density),
+    ]:
+        print(f"\n  Plotting {mode} density panels...")
+        plot_density_panels(
+            all_ds, basin, all_ny, mode=mode, resolution=res, outdir=outdir
+        )
+
+    if dataset_ref is not None:
+        n_new = list(n_years_dict.values())[0]
+        for mode, res in [
+            ("genesis", resolution_density),
+            ("track", resolution_track),
+            ("ace", resolution_density),
+        ]:
+            print(f"  Plotting {mode} difference maps...")
+            plot_difference_triplet(
+                datasets,
+                dataset_ref,
+                basin,
+                n_years_new=n_new,
+                n_years_ref=n_years_ref or 42,
+                mode=mode,
+                resolution=res,
+                datasets_old=datasets_old,
+                n_years_old=n_years_old,
+                outdir=outdir,
+            )
+
+    print("\n  Plotting LMI distribution...")
+    plot_lmi_distribution(all_ds, basin, outdir=outdir)
+    print("  Plotting wind-pressure scatter...")
+    plot_wind_pressure_scatter(all_ds, basin, outdir=outdir)
+    print("  Plotting intensity CDFs...")
+    plot_intensity_cdfs(all_ds, basin, outdir=outdir)
+    print(f"\n  All plots saved to: {outdir}/")
 
 
 # ═══════════════════════════════════════════════════════════════════════
