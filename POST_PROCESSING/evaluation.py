@@ -644,9 +644,11 @@ def intensity_distributions(
 
 # ---------- 5. Average TC lifetime ----------
 
+
 def average_lifetime(catalog: pd.DataFrame) -> dict:
     """
-    Mean number of 3-hourly time steps per TC.
+    Summary statistics of TC lifetime.  See also lifetime_distribution()
+    for the full per-storm DataFrame.
 
     Returns
     -------
@@ -660,6 +662,37 @@ def average_lifetime(catalog: pd.DataFrame) -> dict:
         "median_steps": float(steps.median()),
         "mean_hours": float(steps.mean() * 3),
     }
+
+
+def lifetime_distribution(catalog: pd.DataFrame) -> pd.DataFrame:
+    """
+    Per-storm lifetime table — one row per TC.
+
+    Returns
+    -------
+    DataFrame with columns:
+        storm_uid, year, month, n_steps, duration_hours, pmin, vmax,
+        max_ss_cat, lat_genesis, lon_genesis, has_landfall
+    Export this to CSV to overlay distributions across candidates.
+    """
+    storms = _per_storm_agg(catalog)
+    out = storms[
+        [
+            "year",
+            "month",
+            "n_steps",
+            "lat_genesis",
+            "lon_genesis",
+            "pmin",
+            "vmax",
+            "max_ss",
+            "has_landfall",
+        ]
+    ].copy()
+    out.index.name = "storm_uid"
+    out["duration_hours"] = out["n_steps"] * 3
+    out = out.reset_index()
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -983,6 +1016,114 @@ def ace_density(
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# DENSITY GRID & LIFETIME EXPORT HELPERS
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def export_density_csv(
+    density: np.ndarray,
+    lon_edges: np.ndarray,
+    lat_edges: np.ndarray,
+    filepath: str,
+    value_label: str = "value",
+):
+    """
+    Export a 2-D density grid to a long-format CSV with columns
+    [lat_center, lon_center, <value_label>].
+
+    Suitable for reloading in Python/R for overlaying difference maps.
+    """
+    lon_c = 0.5 * (lon_edges[:-1] + lon_edges[1:])
+    lat_c = 0.5 * (lat_edges[:-1] + lat_edges[1:])
+    rows = []
+    for i, la in enumerate(lat_c):
+        for j, lo in enumerate(lon_c):
+            rows.append(
+                {"lat_center": la, "lon_center": lo, value_label: density[i, j]}
+            )
+    df = pd.DataFrame(rows)
+    df.to_csv(filepath, index=False, float_format="%.6f")
+    return df
+
+
+def export_all_densities(
+    catalog: pd.DataFrame,
+    n_years: int,
+    outdir: str,
+    label: str = "",
+    basin: Optional[str] = None,
+    grid_resolution: float = 1.0,
+    ace_resolution: float = 2.0,
+):
+    """
+    Compute and export genesis, track, and ACE density grids as CSVs.
+
+    Files written:
+        {outdir}/genesis_density_{label}.csv
+        {outdir}/track_density_{label}.csv
+        {outdir}/ace_density_{label}.csv
+
+    Parameters
+    ----------
+    catalog : loaded STORM-format catalog
+    n_years : total simulated years
+    outdir : output directory
+    label : suffix for filenames (e.g. "S3_NA_LN")
+    basin : basin code for setting grid bounds
+    grid_resolution : degrees for genesis & track grids
+    ace_resolution : degrees for ACE grid
+    """
+    os.makedirs(outdir, exist_ok=True)
+
+    lon_range = lat_range = None
+    if basin and basin in BASIN_BOUNDS:
+        b = BASIN_BOUNDS[basin]
+        lon_range = b["lon"]
+        lat_range = b["lat"]
+
+    # Genesis density
+    gd, glon, glat = genesis_density(
+        catalog, n_years, grid_resolution, lon_range, lat_range
+    )
+    export_density_csv(
+        gd,
+        glon,
+        glat,
+        os.path.join(outdir, f"genesis_density_{label}.csv"),
+        "genesis_per_10kyr",
+    )
+
+    # Track density
+    td, tlon, tlat = track_density(
+        catalog, n_years, grid_resolution, lon_range, lat_range
+    )
+    export_density_csv(
+        td,
+        tlon,
+        tlat,
+        os.path.join(outdir, f"track_density_{label}.csv"),
+        "fixes_per_yr",
+    )
+
+    # ACE density
+    ad, alon, alat = ace_density(catalog, n_years, ace_resolution, lon_range, lat_range)
+    export_density_csv(
+        ad,
+        alon,
+        alat,
+        os.path.join(outdir, f"ace_density_{label}.csv"),
+        "ace_1e4_kn2_per_yr",
+    )
+
+    print(f"  Exported density grids to {outdir}/ (*_{label}.csv)")
+    return {
+        "genesis": (gd, glon, glat),
+        "track": (td, tlon, tlat),
+        "ace": (ad, alon, alat),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # COMBINED METRIC COMPUTATION
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -1094,7 +1235,7 @@ def compare_candidates(
     summary_rows = []
 
     for name, spec in candidates.items():
-        cat, _ = load_catalog(
+        cat, files = load_catalog(
             spec["folder"], basin,
             phase=spec.get("phase"),
             file_pattern=spec.get("file_pattern"),
@@ -1104,7 +1245,7 @@ def compare_candidates(
         m = compute_all_metrics(
             cat, n_years, basin=basin,
             reference=reference, ref_n_years=ref_n_years,
-            cities=cities, target_rp=target_rp,
+            cities=cities, target_rp=target_rp, file_paths=files,
         )
 
         row = {"candidate": name}
@@ -1250,6 +1391,152 @@ def plot_density_map(
     ax.set_title(title)
     plt.colorbar(im, ax=ax, shrink=0.7)
     return ax
+
+
+def plot_all_densities(
+    metrics: dict,
+    label: str = "",
+    figsize: Tuple[float, float] = (18, 5),
+):
+    """
+    Three-panel figure: genesis density, track density, ACE density.
+
+    Parameters
+    ----------
+    metrics : output of compute_all_metrics()
+    label : title suffix (e.g. "S3 / LN / NA")
+
+    Returns
+    -------
+    fig, axes
+    """
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 3, figsize=figsize)
+
+    gd = metrics["genesis_density"]
+    plot_density_map(
+        gd["density"],
+        gd["lon_edges"],
+        gd["lat_edges"],
+        title=f"Genesis density  {label}",
+        cmap="YlOrRd",
+        ax=axes[0],
+    )
+
+    td = metrics["track_density"]
+    plot_density_map(
+        td["density"],
+        td["lon_edges"],
+        td["lat_edges"],
+        title=f"Track density  {label}",
+        cmap="YlGnBu",
+        ax=axes[1],
+    )
+
+    ad = metrics["ace_density"]
+    plot_density_map(
+        ad["density"],
+        ad["lon_edges"],
+        ad["lat_edges"],
+        title=f"ACE density  {label}",
+        cmap="hot_r",
+        ax=axes[2],
+    )
+
+    fig.tight_layout()
+    return fig, axes
+
+
+def plot_density_difference(
+    metrics_a: dict,
+    metrics_b: dict,
+    field: str = "track_density",
+    label_a: str = "A",
+    label_b: str = "B",
+    cmap: str = "RdBu_r",
+    vabs: Optional[float] = None,
+    ax=None,
+):
+    """
+    Plot the difference map (A − B) for a given density field.
+
+    Parameters
+    ----------
+    metrics_a, metrics_b : outputs of compute_all_metrics()
+    field : "genesis_density", "track_density", or "ace_density"
+    vabs : symmetric color limit; if None, auto-scaled
+    """
+    import matplotlib.pyplot as plt
+
+    da = metrics_a[field]
+    db = metrics_b[field]
+    diff = da["density"] - db["density"]
+
+    if vabs is None:
+        vabs = float(np.nanmax(np.abs(diff)))
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 5))
+
+    plot_density_map(
+        diff,
+        da["lon_edges"],
+        da["lat_edges"],
+        title=f"{field}:  {label_a} − {label_b}",
+        cmap=cmap,
+        vmin=-vabs,
+        vmax=vabs,
+        ax=ax,
+    )
+    return ax
+
+
+def plot_lifetime_distribution(
+    lifetime_dfs: Dict[str, pd.DataFrame],
+    kind: str = "duration_hours",
+    bins: int = 50,
+    figsize: Tuple[float, float] = (8, 5),
+    density: bool = True,
+):
+    """
+    Overlay lifetime histograms for multiple candidates.
+
+    Parameters
+    ----------
+    lifetime_dfs : {"S3_LN": df, "B1_LN": df, "IBTrACS": df, ...}
+        Each df is the output of lifetime_distribution().
+    kind : column to plot — "duration_hours" or "n_steps"
+    bins : number of histogram bins
+    density : if True, plot as probability density (comparable across catalogs)
+
+    Returns
+    -------
+    fig, ax
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=figsize)
+    xlabel = "Duration (hours)" if kind == "duration_hours" else "Time steps (3h)"
+
+    for label, df in lifetime_dfs.items():
+        ax.hist(
+            df[kind].dropna(),
+            bins=bins,
+            density=density,
+            alpha=0.5,
+            label=label,
+            histtype="stepfilled",
+            linewidth=1.5,
+        )
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Density" if density else "Count")
+    ax.set_title("TC Lifetime Distribution")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig, ax
 
 
 # ═══════════════════════════════════════════════════════════════════════
