@@ -26,6 +26,7 @@ from evaluation import (
     compute_all_metrics,
     assemble_all_catalog,
     compute_phase_fractions,
+    compute_effective_years,
     return_periods_at_cities,
     return_periods_all_catalog,
     export_all_densities,
@@ -165,6 +166,13 @@ def _evaluate_ibtracs(basin, outdir, summary_rows, lifetime_dfs):
     ibt_cats = {}
     ibt_files = {}
 
+    # Compute effective years per phase for this basin
+    # e.g. NA: ALL=42, EN≈9.3, NEU≈23, LN≈9.7
+    eff_years = compute_effective_years(basin, total_years=IBTRACS_N_YEARS)
+    print(f"  Effective years per phase:")
+    for ph, yr in eff_years.items():
+        print(f"    {ph}: {yr:.1f}")
+
     # ALL
     try:
         ibt_all, files_all = load_catalog(REF_FOLDER, basin, phase=None)
@@ -187,12 +195,16 @@ def _evaluate_ibtracs(basin, outdir, summary_rows, lifetime_dfs):
     cities_for_basin = [c for c in DEFAULT_CITIES if c.get("basin") == basin]
     for phase_label, cat in ibt_cats.items():
         files = ibt_files[phase_label]
+        n_years_phase = eff_years[phase_label]
         n_storms = cat["global_storm_uid"].nunique()
-        print(f"\n  IBTrACS / {phase_label}: {n_storms} storms")
+        print(
+            f"\n  IBTrACS / {phase_label}: {n_storms} storms, "
+            f"{n_years_phase:.1f} effective years"
+        )
 
         m = compute_all_metrics(
             cat,
-            IBTRACS_N_YEARS,
+            n_years_phase,
             file_paths=files,
             basin=basin,
             target_rp=TARGET_RP if COMPUTE_RP else None,
@@ -203,6 +215,7 @@ def _evaluate_ibtracs(basin, outdir, summary_rows, lifetime_dfs):
         row = {
             "candidate": "IBTrACS",
             "phase": phase_label,
+            "n_eff_years": n_years_phase,
             "genesis_mean": m["genesis_count"]["mean"],
             "genesis_std": m["genesis_count"]["std"],
             "total_storms": m["genesis_count"]["total_storms"],
@@ -215,7 +228,7 @@ def _evaluate_ibtracs(basin, outdir, summary_rows, lifetime_dfs):
         label_str = f"IBTrACS_{phase_label}"
         export_all_densities(
             cat,
-            IBTRACS_N_YEARS,
+            n_years_phase,
             str(ibt_outdir),
             label_str,
             basin,
