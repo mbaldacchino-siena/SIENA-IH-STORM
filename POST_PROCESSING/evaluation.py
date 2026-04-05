@@ -383,6 +383,48 @@ def compute_phase_fractions(
     return {ph: counts.get(ph, 0) / total for ph in ("EN", "NEU", "LN")}
 
 
+# NEW (entire function added)
+def compute_effective_years(
+    basin: str,
+    total_years: float = 42,
+    oni_df: Optional[pd.DataFrame] = None,
+) -> Dict[str, float]:
+    """
+    Effective observation years per ENSO phase for a given basin.
+
+    For IBTrACS over 1980–2021 (42 years), the EN subset doesn't cover
+    42 years — it covers only the active-season months classified as EN.
+    The effective years are:
+
+        Y_eff(phase) = (n_active_months_in_phase / season_length)
+
+    This is the correct denominator for annual rates (genesis/yr, etc.)
+    when evaluating phase-specific IBTrACS subsets.
+
+    Parameters
+    ----------
+    basin : basin code
+    total_years : total observation period (default 42 for 1980–2021)
+    oni_df : ONI table (uses built-in if None)
+
+    Returns
+    -------
+    dict : {"EN": eff_years, "NEU": eff_years, "LN": eff_years, "ALL": total_years}
+    """
+    if oni_df is None:
+        oni_df = _default_oni_table()
+    active = set(ACTIVE_MONTHS[basin])
+    season_length = len(active)
+    sub = oni_df[oni_df["month"].isin(active)]
+    counts = sub["phase"].value_counts()
+
+    result = {"ALL": float(total_years)}
+    for ph in ("EN", "NEU", "LN"):
+        n_months = counts.get(ph, 0)
+        result[ph] = float(n_months) / season_length
+    return result
+
+
 def assemble_all_catalog(
     phase_folders: Dict[str, str],
     basin: str,
@@ -515,22 +557,27 @@ def _per_storm_agg(catalog: pd.DataFrame) -> pd.DataFrame:
 # ---------- 1. Annual genesis count ----------
 
 
-def annual_genesis_count(catalog: pd.DataFrame, n_years: int) -> dict:
-    """
-    Mean and std of annual TC formations.
-
-    Returns
-    -------
-    dict with keys: mean, std, lambda_hat (= mean), total_storms, n_years
-    """
+def annual_genesis_count(catalog: pd.DataFrame, n_years: float) -> dict:
+    """..."""
     storms = _per_storm_agg(catalog)
-    annual = storms.groupby("year").size().reindex(range(n_years), fill_value=0)
+    total = len(storms)
+    mean_rate = total / n_years
+
+    if "year" in storms.columns:
+        actual_years = catalog["global_year"].nunique()
+        annual = (
+            storms.groupby("year").size().reindex(range(actual_years), fill_value=0)
+        )
+        std_val = float(annual.std())
+    else:
+        std_val = np.sqrt(mean_rate)
+
     return {
-        "mean": float(annual.mean()),
-        "std": float(annual.std()),
-        "lambda_hat": float(annual.mean()),
-        "total_storms": int(len(storms)),
-        "n_years": n_years,
+        "mean": float(mean_rate),
+        "std": std_val,
+        "lambda_hat": float(mean_rate),
+        "total_storms": int(total),
+        "n_years": float(n_years),
     }
 
 
@@ -539,7 +586,7 @@ def annual_genesis_count(catalog: pd.DataFrame, n_years: int) -> dict:
 
 def genesis_density(
     catalog: pd.DataFrame,
-    n_years: int,
+    n_years: float,
     resolution: float = 1.0,
     lon_range: Optional[Tuple[float, float]] = None,
     lat_range: Optional[Tuple[float, float]] = None,
@@ -575,7 +622,7 @@ def genesis_density(
 
 def track_density(
     catalog: pd.DataFrame,
-    n_years: int,
+    n_years: float,
     resolution: float = 1.0,
     lon_range: Optional[Tuple[float, float]] = None,
     lat_range: Optional[Tuple[float, float]] = None,
@@ -735,24 +782,26 @@ def lifetime_distribution(catalog: pd.DataFrame) -> pd.DataFrame:
 # ---------- 6. Landfall counts ----------
 
 
-def landfall_counts(catalog: pd.DataFrame, n_years: int) -> dict:
-    """
-    Mean annual number of landfall events.
-    A landfall event = first time step where landfall==1 for a given storm.
-
-    Returns
-    -------
-    dict: total_landfalls, annual_mean, annual_std
-    """
+def landfall_counts(catalog: pd.DataFrame, n_years: float) -> dict:
+    """..."""
     storms = _per_storm_agg(catalog)
     lf_storms = storms[storms["has_landfall"] == 1]
     n_lf = len(lf_storms)
 
-    annual = lf_storms.groupby("year").size().reindex(range(n_years), fill_value=0)
+    mean_rate = n_lf / n_years
+    if "year" in lf_storms.columns:
+        actual_years = catalog["global_year"].nunique()
+        annual = (
+            lf_storms.groupby("year").size().reindex(range(actual_years), fill_value=0)
+        )
+        std_val = float(annual.std())
+    else:
+        std_val = np.sqrt(mean_rate)
+
     return {
         "total_landfalls": int(n_lf),
-        "annual_mean": float(annual.mean()),
-        "annual_std": float(annual.std()),
+        "annual_mean": float(mean_rate),
+        "annual_std": std_val,
     }
 
 
@@ -859,7 +908,7 @@ def _extract_city_max_winds(
 
 def return_periods_at_city(
     catalog: list[str],
-    n_years: int,
+    n_years: float,
     city_lat: float,
     city_lon: float,
     radius_km: float = 111.0,
@@ -911,7 +960,7 @@ def return_periods_at_city(
 
 def return_periods_at_cities(
     catalog: list[str],
-    n_years: int,
+    n_years: float,
     cities: Optional[List[dict]] = None,
     radius_km: float = 111.0,
     min_wind: float = 18.0,
@@ -982,9 +1031,10 @@ def return_periods_at_cities(
         )
         haz.check()
 
-        eff_years = float(
-            len(scenarios) * 1_000
-        )  # 1_000 is the number of years per file
+        # Use the caller-provided n_years for frequency, not a hardcoded assumption.
+        # For synthetic catalogs: n_years = len(files) * 1000 (set by caller)
+        # For IBTrACS: n_years = effective observation years (e.g. 42, or phase-adjusted)
+        eff_years = float(n_years)
         haz.frequency = np.full(haz.size, 1.0 / eff_years)
         haz.frequency_unit = "1/year"
 
@@ -1199,7 +1249,7 @@ def return_periods_all_catalog(
 
 def ace_density(
     catalog: pd.DataFrame,
-    n_years: int,
+    n_years: float,
     resolution: float = 2.0,
     lon_range: Optional[Tuple[float, float]] = None,
     lat_range: Optional[Tuple[float, float]] = None,
@@ -1266,7 +1316,7 @@ def export_density_csv(
 
 def export_all_densities(
     catalog: pd.DataFrame,
-    n_years: int,
+    n_years: float,
     outdir: str,
     label: str = "",
     basin: Optional[str] = None,
@@ -1348,7 +1398,7 @@ def export_all_densities(
 
 def compute_all_metrics(
     catalog: pd.DataFrame,
-    n_years: int,
+    n_years: float,
     file_paths: list[str],
     basin: Optional[str] = None,
     reference: Optional[pd.DataFrame] = None,
