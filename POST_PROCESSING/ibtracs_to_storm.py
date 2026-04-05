@@ -647,10 +647,15 @@ def convert_ibtracs(
             if sdf.empty:
                 continue
 
-            # ── 4b. Filter: keep only TS+ storms ──
-            max_wind = sdf["wind_ms"].max()
-            if np.isnan(max_wind) or max_wind < MIN_WIND_MS:
+            # ── 4b. Filter: keep only TS+ track points ──
+            # STORM preprocessing drops every point with wmo_wind < 18 m/s:
+            #   df1 = df1[df1["wmo_wind"] >= 18]
+            # and synthetic output only contains TS+ points by construction.
+            # Apply the same filter here for a fair comparison.
+            sdf = sdf[sdf["wind_ms"] >= MIN_WIND_MS].copy()
+            if len(sdf) < 2:
                 continue
+            sdf = sdf.reset_index(drop=True)
 
             # ── 4c. Compute landfall & dist_land ──
             if basin in masks:
