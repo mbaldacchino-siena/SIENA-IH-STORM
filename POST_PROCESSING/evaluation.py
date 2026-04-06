@@ -148,6 +148,11 @@ STORM_COLUMNS = [
 
 def load_storm_file(filepath: str) -> pd.DataFrame:
     """Load a single STORM .txt file into a DataFrame."""
+    
+    return df
+
+def load_storm_file(filepath: str) -> pd.DataFrame:
+    """Load a single STORM .txt file into a DataFrame."""
     df = pd.read_csv(
         filepath,
         header=None,
@@ -168,6 +173,12 @@ def load_storm_file(filepath: str) -> pd.DataFrame:
             "dist_land": np.float64,
         },
     )
+    # Drop rows where wind is NaN (can occur from numerical issues in simulation)
+    n_before = len(df)
+    df = df.dropna(subset=["wind", "pressure"])
+    n_dropped = n_before - len(df)
+    if n_dropped > 0:
+        print(f"  Warning: dropped {n_dropped} rows with NaN wind in {os.path.basename(filepath)}")
     return df
 
 
