@@ -16,7 +16,7 @@ import os.path as op
 import cdsapi
 import pandas as pd
 import numpy as np
-import potential_intensity 
+import potential_intensity
 
 from pathlib import Path
 
@@ -201,7 +201,7 @@ def _download_wind_shear_data(dir_data, year_list):
             out_path,
         )
     my_file = op.join(dir_data, "Monthly_mean_VWS.nc")
-        
+
     if not Path(my_file).is_file():
         ds = xr.open_dataset(out_path)
         u_name = "u" if "u" in ds.data_vars else list(ds.data_vars)[0]
@@ -442,9 +442,14 @@ def _save_phase_table(climate_df, local_path):
 
 
 def compute_phase_climatology(
-    nc_path : str, varname : str | None, oni_df : pd.DataFrame, out_stem : str,
-      out_dir : str | None, pressure_level_idx : int | None =None, unit_scale : float =1.0,
-) -> tuple[dict,dict]:
+    nc_path: str,
+    varname: str | None,
+    oni_df: pd.DataFrame,
+    out_stem: str,
+    out_dir: str | None,
+    pressure_level_idx: int | None = None,
+    unit_scale: float = 1.0,
+) -> tuple[dict, dict]:
     """
     Unified phase-specific climatology builder.
 
@@ -501,8 +506,8 @@ def compute_phase_climatology(
     ds.close()
 
     # Average and save
-    clim : dict = {m: {} for m in range(1, 13)}
-    pooled : dict = {}
+    clim: dict = {m: {} for m in range(1, 13)}
+    pooled: dict = {}
 
     for m in range(1, 13):
         # Pooled
@@ -527,7 +532,9 @@ def compute_phase_climatology(
 
 
 def build_pooled_and_phase_climatologies(
-    period, climate_index="ONI", threshold=0.5,
+    period,
+    climate_index="ONI",
+    threshold=0.5,
 ):
     local_path = os.getcwd()
 
@@ -595,3 +602,234 @@ def build_pooled_and_phase_climatologies(
 
     return climate_df
 
+
+# ==============================================================================
+# Year-level environmental fields for interannual resampling
+# ==============================================================================
+
+
+def save_yearly_env_fields(climate_df, period):
+    """
+    Extract and save individual year-month environmental fields for runtime
+    resampling. Instead of loading phase-mean climatologies (which suppress
+    interannual variability), the simulation can draw a random historical
+    year and load that year's actual VWS/RH/MSLP/PI.
+
+    Storage: env_yearly/{stem}_{year}_{month}.npy
+
+    Also builds a year_pool.json mapping each ENSO phase to its available
+    historical years, used at runtime for sampling.
+
+    For seasonal forecast mode: place forecast fields in the same directory
+    with a synthetic year label (e.g. 9999). The runtime code will load them
+    when env_year=9999 is passed.
+
+    Parameters
+    ----------
+    climate_df : DataFrame with [year, month, climate_index, phase]
+    period : (start_year, end_year)
+    """
+    from siena_utils import save_yearly_field, save_year_pool, _env_yearly_dir
+
+    local_path = os.getcwd()
+    out_dir = _env_yearly_dir(local_path)
+    print(f"Saving yearly fields to {out_dir}")
+
+    # ── 1. Build month-level year pool ──
+    # For each (phase, month), store which historical years had that month
+    # in that phase. This ensures that when generating an LN catalog, a
+    # storm born in September loads environmental fields from a September
+    # that was actually classified as LN — not from a year that was LN
+    # overall but had a NEU September.
+    #
+    # Structure: {"LN": {"6": [1988, 1999], "7": [1988, ...]}, ...}
+    month_pool = {"LN": {}, "NEU": {}, "EN": {}}
+    for _, row in climate_df.iterrows():
+        yr = int(row["year"])
+        mo = str(int(row["month"]))
+        ph = str(row["phase"]).strip().upper()
+        if ph not in month_pool:
+            continue
+        if mo not in month_pool[ph]:
+            month_pool[ph][mo] = []
+        if yr not in month_pool[ph][mo]:
+            month_pool[ph][mo].append(yr)
+
+    # Sort for reproducibility
+    for ph in month_pool:
+        for mo in month_pool[ph]:
+            month_pool[ph][mo].sort()
+
+    save_year_pool(local_path, month_pool)
+    for ph in ["LN", "NEU", "EN"]:
+        month_counts = {m: len(yrs) for m, yrs in month_pool[ph].items()}
+        print(f"  {ph} month pool: {month_counts}")
+
+    # ── 2. Extract per-year-month VWS, RH, MSLP from NetCDF ──
+    variables = [
+        ("Monthly_mean_VWS.nc", "vws", "VWS", None, 1.0),
+        ("Monthly_mean_RH600.nc", "r", "RH600", 0, 1.0),
+        ("Monthly_mean_MSLP.nc", "msl", "MSLP", None, 0.01),  # Pa → hPa
+        ("Monthly_mean_SST.nc", "sst", "SST", None, 1.0),
+    ]
+
+    for nc_file, varname, stem, plev, scale in variables:
+        nc_path = op.join(local_path, nc_file)
+        if not op.exists(nc_path):
+            print(f"  Skipping {stem}: {nc_file} not found")
+            continue
+
+        ds = xr.open_dataset(nc_path)
+        time_dim = "valid_time" if "valid_time" in ds.dims else "time"
+
+        if varname is None or varname not in ds:
+            varname = list(ds.data_vars)[0]
+
+        if plev is not None:
+            lvl_dim = "pressure_level" if "pressure_level" in ds.dims else "level"
+            ds = ds.isel({lvl_dim: plev})
+
+        times = pd.to_datetime(ds[time_dim].values)
+        saved = 0
+        for t_idx in range(len(times)):
+            yr = int(times[t_idx].year)
+            mo = int(times[t_idx].month)
+            if yr < period[0] or yr > period[1]:
+                continue
+            field = ds[varname].isel({time_dim: t_idx}).values * scale
+            save_yearly_field(local_path, stem, yr, mo, field)
+            saved += 1
+
+        ds.close()
+        print(f"  {stem}: saved {saved} year-month fields")
+
+    # ── 3. Compute per-year-month thermodynamic PI ──
+    # Uses full Bister & Emanuel (2002) via tcpyPI when T/Q profiles are
+    # available at 1°. This preserves the interannual atmospheric profile
+    # variation (tropopause temperature, moisture stratification) that the
+    # simplified SST-only approximation would miss.
+    # Compute at 1° (T/Q native resolution), NaN-fill coastal cells, then
+    # upscale to 0.25° for consistency with other environmental fields.
+    # One-time cost: ~4-8 hours for 42 years × 12 months = 504 fields.
+    sst_nc = op.join(local_path, "Monthly_mean_SST.nc")
+    mslp_nc = op.join(local_path, "Monthly_mean_MSLP.nc")
+    t_nc = op.join(local_path, "Monthly_mean_T.nc")
+    q_nc = op.join(local_path, "Monthly_mean_Q.nc")
+
+    has_profiles = op.exists(t_nc) and op.exists(q_nc)
+    use_full_pi = potential_intensity.HAS_TCPYPI and has_profiles
+
+    if not op.exists(sst_nc) or not op.exists(mslp_nc):
+        print("  Skipping yearly PI: SST or MSLP .nc not found")
+    else:
+        if use_full_pi:
+            print("  Computing yearly PI with full tcpyPI (Bister & Emanuel 2002)")
+        elif has_profiles:
+            print("  tcpyPI not installed — falling back to simplified PI")
+            print("  Install with: pip install tcpyPI")
+        else:
+            print("  No T/Q profiles — falling back to simplified PI")
+
+        ds_sst = xr.open_dataset(sst_nc)
+        ds_mslp = xr.open_dataset(mslp_nc)
+        time_dim_s = "valid_time" if "valid_time" in ds_sst.dims else "time"
+        time_dim_m = "valid_time" if "valid_time" in ds_mslp.dims else "time"
+        var_sst = "sst" if "sst" in ds_sst else list(ds_sst.data_vars)[0]
+        var_mslp = "msl" if "msl" in ds_mslp else list(ds_mslp.data_vars)[0]
+
+        # Determine fine grid shape (0.25°) from SST
+        fine_shape = ds_sst[var_sst].isel({time_dim_s: 0}).values.shape
+
+        # Load T/Q if available
+        ds_t = ds_q = p_lev_hPa = None
+        coarse_shape = None
+        if use_full_pi:
+            ds_t = xr.open_dataset(t_nc)
+            ds_q = xr.open_dataset(q_nc)
+            time_dim_t = "valid_time" if "valid_time" in ds_t.dims else "time"
+            lvl_dim = "pressure_level" if "pressure_level" in ds_t.dims else "level"
+            p_lev_hPa = ds_t[lvl_dim].values.astype(float)
+            var_t = "t" if "t" in ds_t else list(ds_t.data_vars)[0]
+            var_q = "q" if "q" in ds_q else list(ds_q.data_vars)[0]
+            # Coarse shape from T (1° = 181×360)
+            sample_t = ds_t[var_t].isel({time_dim_t: 0}).values
+            coarse_shape = sample_t.shape[-2:]
+            print(
+                f"  PI grid: compute at {coarse_shape} (1°), upscale to {fine_shape} (0.25°)"
+            )
+
+        # Build time index lookups for MSLP and T/Q
+        times_s = pd.to_datetime(ds_sst[time_dim_s].values)
+        times_m = pd.to_datetime(ds_mslp[time_dim_m].values)
+        mslp_idx = {
+            (int(times_m[i].year), int(times_m[i].month)): i
+            for i in range(len(times_m))
+        }
+        t_idx_lookup = {}
+        if ds_t is not None:
+            times_t = pd.to_datetime(ds_t[time_dim_t].values)
+            t_idx_lookup = {
+                (int(times_t[i].year), int(times_t[i].month)): i
+                for i in range(len(times_t))
+            }
+
+        saved_pi = 0
+        for s_idx in range(len(times_s)):
+            yr = int(times_s[s_idx].year)
+            mo = int(times_s[s_idx].month)
+            if yr < period[0] or yr > period[1]:
+                continue
+
+            # Check if already computed (skip on re-runs)
+            _check = os.path.join(out_dir, f"PI_{yr}_{mo}.npy")
+            if os.path.exists(_check):
+                saved_pi += 1
+                continue
+
+            sst_field = ds_sst[var_sst].isel({time_dim_s: s_idx}).values
+            m_idx = mslp_idx.get((yr, mo))
+            if m_idx is None:
+                continue
+            mslp_field = ds_mslp[var_mslp].isel({time_dim_m: m_idx}).values * 0.01
+
+            if use_full_pi and (yr, mo) in t_idx_lookup:
+                # Full thermodynamic PI
+                ti = t_idx_lookup[(yr, mo)]
+                t_field = ds_t[var_t].isel({time_dim_t: ti}).values
+                q_field = ds_q[var_q].isel({time_dim_t: ti}).values
+
+                # Coarsen SST/MSLP to match T/Q grid (1°)
+                sst_c = potential_intensity._coarsen_to_match(sst_field, coarse_shape)
+                mslp_c = potential_intensity._coarsen_to_match(mslp_field, coarse_shape)
+
+                pmin, _ = potential_intensity.compute_pi_field_tcpyPI(
+                    sst_c, mslp_c, t_field, q_field, p_lev_hPa
+                )
+                # NaN-fill coastal cells before upscaling
+                pmin = potential_intensity._nanfill_nearest(pmin)
+                # Upscale to 0.25°
+                if pmin.shape != fine_shape:
+                    pmin = potential_intensity._upscale_to_target(pmin, fine_shape)
+            else:
+                # Simplified fallback
+                pmin, _ = potential_intensity.compute_pi_field_simplified(
+                    sst_field, mslp_field
+                )
+
+            save_yearly_field(local_path, "PI", yr, mo, pmin)
+            saved_pi += 1
+            if saved_pi % 50 == 0:
+                print(f"    PI progress: {saved_pi} fields computed...")
+
+        ds_sst.close()
+        ds_mslp.close()
+        if ds_t is not None:
+            ds_t.close()
+        if ds_q is not None:
+            ds_q.close()
+        print(
+            f"  PI: saved {saved_pi} year-month fields"
+            f" ({'tcpyPI' if use_full_pi else 'simplified'})"
+        )
+
+    print("Yearly env fields complete.")

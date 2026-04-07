@@ -43,6 +43,175 @@ def load_monthly_field(base_dir, stem, month, phase=None):
     return np.loadtxt(file_with_phase(base_dir, stem, month, phase=phase, ext="txt"))
 
 
+# =========================================================================
+# Year-level environmental field resampling
+# =========================================================================
+# Instead of loading phase-mean climatological fields (which suppress
+# interannual variability and compress the intensity tail), we store
+# individual year-month fields and draw a random historical year per
+# simulated year. All storms in that simulated year share the same
+# environmental context — preserving within-year coherence and the
+# joint VWS-RH-PI covariance that drives extreme events.
+#
+# Storage layout:
+#   env_yearly/
+#     VWS_{year}_{month}.npy
+#     RH600_{year}_{month}.npy
+#     MSLP_{year}_{month}.npy
+#     PI_{year}_{month}.npy
+#     year_pool.json
+#
+# For seasonal forecasts: place forecast fields in the same directory
+# with a synthetic "year" label (e.g. 9999) and pass env_year=9999.
+# =========================================================================
+
+import json
+
+ENV_YEARLY_DIR = "env_yearly"
+
+
+def _env_yearly_dir(base_dir):
+    """Return the env_yearly directory path, creating it if needed."""
+    d = os.path.join(base_dir, ENV_YEARLY_DIR)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def save_year_pool(base_dir, year_pool):
+    """
+    Save the year pool mapping: {phase_str: [year1, year2, ...]}.
+
+    Parameters
+    ----------
+    base_dir : str, project directory
+    year_pool : dict, e.g. {"LN": [1988, 1999, ...], "NEU": [...], "EN": [...]}
+    """
+    path = os.path.join(_env_yearly_dir(base_dir), "year_pool.json")
+    # Convert numpy int types to plain int for JSON serialization
+    pool = {k: [int(y) for y in v] for k, v in year_pool.items()}
+    with open(path, "w") as f:
+        json.dump(pool, f, indent=2)
+
+
+def load_year_pool(base_dir):
+    """
+    Load the year pool mapping.
+
+    Returns
+    -------
+    dict : {phase_str: [year1, year2, ...]}
+    """
+    path = os.path.join(_env_yearly_dir(base_dir), "year_pool.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+def sample_env_year(year_pool, phase, month):
+    """
+    Draw a random historical year for a specific (phase, month).
+
+    The pool is structured as {"LN": {"6": [1988, 1999], ...}, ...}.
+    This guarantees the returned year actually had that month in the
+    target ENSO phase.
+
+    Parameters
+    ----------
+    year_pool : dict from load_year_pool()
+    phase : str, "LN" / "NEU" / "EN"
+    month : int, calendar month (1-12)
+
+    Returns
+    -------
+    int : a historical year, or None if pool is empty
+    """
+    phase = normalize_phase(phase)
+    mo_key = str(int(month))
+
+    if phase is not None:
+        phase_pool = year_pool.get(phase, {})
+        years = phase_pool.get(mo_key, [])
+        if years:
+            return int(np.random.choice(years))
+
+    # Fallback: pool across all phases for this month
+    all_years = []
+    for ph_pool in year_pool.values():
+        if isinstance(ph_pool, dict):
+            all_years.extend(ph_pool.get(mo_key, []))
+        elif isinstance(ph_pool, list):
+            # Backward compat with old year-level pool format
+            all_years.extend(ph_pool)
+    if all_years:
+        return int(np.random.choice(all_years))
+    return None
+
+
+def draw_env_years_for_season(year_pool, phase, active_months):
+    """
+    Draw one historical year per active-season month for a simulated year.
+
+    All storms born in the same month share the same environmental context
+    (within-month coherence), while each month independently comes from a
+    year where that month was actually in the target ENSO phase.
+
+    Parameters
+    ----------
+    year_pool : dict from load_year_pool()
+    phase : str, "LN" / "NEU" / "EN"
+    active_months : list of int, e.g. [6, 7, 8, 9, 10, 11] for NA
+
+    Returns
+    -------
+    dict : {month: historical_year} e.g. {6: 1988, 7: 1999, ...}
+           Returns None values for months with empty pools.
+    """
+    env_years = {}
+    for m in active_months:
+        env_years[m] = sample_env_year(year_pool, phase, m)
+    return env_years
+
+
+def save_yearly_field(base_dir, stem, year, month, field):
+    """Save a single year-month environmental field as .npy."""
+    d = _env_yearly_dir(base_dir)
+    path = os.path.join(d, f"{stem}_{year}_{month}.npy")
+    np.save(path, field.astype(np.float32))
+
+
+def load_yearly_field(base_dir, stem, year, month):
+    """
+    Load a year-specific field. Returns None if not found.
+    Falls back to phase-mean or pooled field if yearly file is missing.
+    """
+    d = _env_yearly_dir(base_dir)
+    path = os.path.join(d, f"{stem}_{year}_{month}.npy")
+    if os.path.exists(path):
+        return np.load(path).astype(np.float64)
+    return None
+
+
+def load_field_with_year_fallback(base_dir, stem, month, phase=None, env_year=None):
+    """
+    Load an environmental field with year → phase-mean → pooled fallback.
+
+    Priority:
+      1. Year-specific field (if env_year is set and file exists)
+      2. Phase-specific mean field (Monthly_mean_{stem}_{month}_{phase}.txt)
+      3. Pooled mean field (Monthly_mean_{stem}_{month}.txt)
+    """
+    if env_year is not None:
+        yearly = load_yearly_field(base_dir, stem, env_year, month)
+        if yearly is not None:
+            return yearly
+    # Fall back to phase-mean or pooled
+    try:
+        return load_monthly_field(base_dir, f"Monthly_mean_{stem}", month, phase=phase)
+    except Exception:
+        return None
+
+
 def load_climate_index_table(path="climate_index.csv"):
     if not os.path.exists(path):
         return pd.DataFrame(columns=["year", "month", "climate_index", "phase"])

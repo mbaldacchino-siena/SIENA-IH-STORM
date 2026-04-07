@@ -28,7 +28,7 @@ dir_path = os.path.dirname(os.path.realpath(__file__))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
 
-def _run_single_job(job, years_per_loop):
+def _run_single_job(job, years_per_loop, use_yearly=True):
     """
     Worker function: generates one loop of synthetic storms.
     Called in a separate process -- must import everything locally
@@ -48,10 +48,23 @@ def _run_single_job(job, years_per_loop):
     from SAMPLE_STARTING_POINT import Startingpoint
     from SAMPLE_TC_MOVEMENT import TC_movement
     from SAMPLE_TC_PRESSURE import TC_pressure
+    from siena_utils import load_year_pool, draw_env_years_for_season
+
+    # ---- Load year pool (tiny JSON, fast) ----
+    year_pool = None
+    if use_yearly:
+        year_pool = load_year_pool(__location__)
+        if not year_pool:
+            year_pool = None
+
+    # Get active-season months for this basin
+    _, season_months, *_ = Basins_WMO(basin, phase=phase)
+    active_months = sorted(set(season_months)) if season_months else list(range(1, 13))
 
     pid = os.getpid()
     print(
         f"[PID {pid}] Starting: basin={basin} phase={phase} loop={loop_idx} ({years_per_loop} years)"
+        f"{' [year resampling]' if year_pool else ''}"
     )
     t0 = time.time()
 
@@ -60,6 +73,12 @@ def _run_single_job(job, years_per_loop):
         storms_per_year, genesis_month, lat0, lat1, lon0, lon1 = Basins_WMO(
             basin, phase=phase
         )
+
+        # ── Draw historical years per month for this simulated year ──
+        env_years = None
+        if year_pool is not None:
+            env_years = draw_env_years_for_season(year_pool, phase, active_months)
+
         if storms_per_year > 0:
             lon_genesis_list, lat_genesis_list = Startingpoint(
                 storms_per_year, genesis_month, basin, phase=phase
@@ -70,6 +89,7 @@ def _run_single_job(job, years_per_loop):
                 basin,
                 phase=phase,
                 monthlist=genesis_month,
+                env_years=env_years,
             )
             TC_data = TC_pressure(
                 basin,
@@ -81,6 +101,7 @@ def _run_single_job(job, years_per_loop):
                 genesis_month,
                 TC_data,
                 phase=phase,
+                env_years=env_years,
             )
 
     TC_data = np.array(TC_data)
@@ -129,6 +150,11 @@ def main():
         default=None,
         help="Number of parallel workers (default: CPU count)",
     )
+    parser.add_argument(
+        "--no-yearly",
+        action="store_true",
+        help="Disable year resampling (use phase-mean fields)",
+    )
     args = parser.parse_args()
 
     # Resolve phases
@@ -157,12 +183,15 @@ def main():
     print(f"Total jobs:  {len(jobs)}")
     print(f"Total years: {total_years:,}")
     print(f"Workers:     {n_workers}")
+    print(f"Year resamp: {'disabled' if args.no_yearly else 'enabled'}")
     print("=" * 70)
 
     start_time = time.time()
 
     # ---- Run in parallel ----
-    worker_fn = partial(_run_single_job, years_per_loop=args.years)
+    worker_fn = partial(
+        _run_single_job, years_per_loop=args.years, use_yearly=not args.no_yearly
+    )
 
     if n_workers == 1:
         # Sequential mode (useful for debugging)
