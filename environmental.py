@@ -978,6 +978,30 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=None)
                 print(f"  WARNING: No PI or MPI field found for idx={idx}, month={m}")
                 continue
 
+            # ── Load phase-specific PI fields for point-level assignment ──
+            # Each observation will get PI from its ENSO phase's field at
+            # its exact (lat, lon). This makes fitting consistent with runtime,
+            # where SAMPLE_TC_PRESSURE loads the phase-specific PI at 0.25°.
+            # The pooled MPI_MATRIX above is kept for the 5° cell fallback
+            # stored in row[7] of COEFFICIENTS_JM_PRESSURE.
+            _pi_fields_month = {}
+            _pi_fields_month[None] = PI_GLOBAL if os.path.exists(pi_path) else None
+            for _ph in ["LN", "NEU", "EN"]:
+                _ph_path = os.path.join(__location__, f"Monthly_mean_PI_{m}_{_ph}.txt")
+                if os.path.exists(_ph_path):
+                    _pi_fields_month[_ph] = np.loadtxt(_ph_path)
+                else:
+                    _pi_fields_month[_ph] = _pi_fields_month[None]
+            _n_phase_pi = sum(
+                1
+                for _ph in ["LN", "NEU", "EN"]
+                if _pi_fields_month[_ph] is not _pi_fields_month[None]
+            )
+            print(
+                f"  Point-level PI: {_n_phase_pi}/3 phase-specific fields loaded"
+                f" (fallback to pooled for the rest)"
+            )
+
             lat_df, lon_df, mpi_df = [], [], []
             for i0 in range(len(MPI_MATRIX[:, 0])):
                 for j0 in range(len(MPI_MATRIX[0, :])):
@@ -1075,23 +1099,63 @@ def pressure_coefficients(idx_basin, months, months_for_coef, lambda_phase=None)
                     i_ind = int((latidx - lat0) / 5.0)
                     j_ind = int((lonidx - lon0) / 5.0)
                     subset = []
+                    _phase_int_to_str = {0: "LN", 1: "NEU", 2: "EN"}
                     for lat_sur in [-5, 0, 5]:
                         for lon_sur in [-5, 0, 5]:
                             key = (int(latidx + lat_sur), int(lonidx + lon_sur))
                             if key in lijst:
+                                # Get cell-level median as fallback
                                 try:
-                                    local_mpi = np.nanmedian(
+                                    cell_median = np.nanmedian(
                                         MPI[latidx + lat_sur][lonidx + lon_sur]
                                     )
                                 except Exception:
-                                    local_mpi = np.nan
-                                if np.isfinite(local_mpi) and local_mpi > 0.0:
-                                    chunk = df_data1[
-                                        (df_data1["latbin"] == latidx + lat_sur)
-                                        & (df_data1["lonbin"] == lonidx + lon_sur)
-                                    ].copy()
+                                    cell_median = np.nan
+
+                                chunk = df_data1[
+                                    (df_data1["latbin"] == latidx + lat_sur)
+                                    & (df_data1["lonbin"] == lonidx + lon_sur)
+                                ].copy()
+                                if len(chunk) > 0:
+                                    # Point-level PI: each obs gets PI from
+                                    # its phase's field at its (lat, lon)
+                                    pi_vals = np.full(len(chunk), np.nan)
+                                    for _k in range(len(chunk)):
+                                        _olat = float(chunk.iloc[_k]["Latitude"])
+                                        _olon = float(chunk.iloc[_k]["Longitude"])
+                                        _oph = (
+                                            int(chunk.iloc[_k]["Phase"])
+                                            if "Phase" in chunk.columns
+                                            else 1
+                                        )
+                                        _ph_str = _phase_int_to_str.get(_oph)
+                                        _pi_fld = _pi_fields_month.get(
+                                            _ph_str, _pi_fields_month.get(None)
+                                        )
+                                        if _pi_fld is not None:
+                                            _li = int(round((90.0 - _olat) / 0.25))
+                                            _lo = (
+                                                int(round((_olon % 360.0) / 0.25))
+                                                % 1440
+                                            )
+                                            if (
+                                                0 <= _li < _pi_fld.shape[0]
+                                                and 0 <= _lo < _pi_fld.shape[1]
+                                            ):
+                                                _v = float(_pi_fld[_li, _lo])
+                                                if np.isfinite(_v) and _v > 0:
+                                                    pi_vals[_k] = _v
+                                    # Fill remaining NaNs with cell median
+                                    if np.isfinite(cell_median) and cell_median > 0:
+                                        _nan_mask = ~np.isfinite(pi_vals) | (
+                                            pi_vals <= 0
+                                        )
+                                        pi_vals[_nan_mask] = cell_median
+                                    chunk["MPI"] = pi_vals
+                                    chunk = chunk[
+                                        chunk["MPI"].notna() & (chunk["MPI"] > 0)
+                                    ]
                                     if len(chunk) > 0:
-                                        chunk["MPI"] = local_mpi
                                         subset.append(chunk)
                     if len(subset) == 0:
                         continue
