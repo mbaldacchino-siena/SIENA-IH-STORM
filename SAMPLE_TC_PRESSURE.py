@@ -570,7 +570,7 @@ def TC_pressure(
 
                         if p < mpi:
                             if dp0 < 0:
-                                if count < 2:
+                                if count < 6:
                                     count = count + 1
                                 else:
                                     dp0 = abs(dp0)
@@ -751,7 +751,7 @@ def TC_pressure(
 
                         if p < mpi:
                             if dp0 < 0:
-                                if count < 2:
+                                if count < 6:
                                     count = count + 1
                                 else:
                                     dp0 = abs(dp0)
