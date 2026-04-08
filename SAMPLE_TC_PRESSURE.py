@@ -34,7 +34,12 @@ import os
 dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 import random
-from siena_utils import normalize_phase, phase_code, load_monthly_field
+from siena_utils import (
+    normalize_phase,
+    phase_code,
+    load_monthly_field,
+    load_field_with_year_fallback,
+)
 
 # ==========================================================================
 # MODULE-LEVEL CACHES — loaded once, reused across all calls
@@ -55,18 +60,30 @@ def _get_coastal_data():
     return _COASTAL_CACHE
 
 
-# Cache 2: Monthly environmental fields keyed by (stem, month, phase_str)
+# Cache 2: Monthly environmental fields keyed by (stem, month, phase_str, env_year)
 # Original code called np.loadtxt (text parsing of 721×1440 grids) per storm.
 # Multiple storms in the same month re-parsed the same file.
 _FIELD_CACHE = {}
 
 
-def _load_field_cached(stem, month, phase=None):
-    """Load a monthly field, caching the result for subsequent calls."""
-    key = (stem, month, normalize_phase(phase))
+def _load_field_cached(stem, month, phase=None, env_year=None):
+    """Load a monthly field, caching the result for subsequent calls.
+    If env_year is set, load year-specific field with phase-mean fallback.
+    """
+    key = (stem, month, normalize_phase(phase), env_year)
     if key not in _FIELD_CACHE:
         try:
-            _FIELD_CACHE[key] = load_monthly_field(dir_path, stem, month, phase=phase)
+            if env_year is not None:
+                # Year-specific: stem is e.g. "VWS", not "Monthly_mean_VWS"
+                # load_field_with_year_fallback handles the prefix
+                _stem = stem.replace("Monthly_mean_", "")
+                _FIELD_CACHE[key] = load_field_with_year_fallback(
+                    dir_path, _stem, month, phase=phase, env_year=env_year
+                )
+            else:
+                _FIELD_CACHE[key] = load_monthly_field(
+                    dir_path, stem, month, phase=phase
+                )
         except Exception:
             _FIELD_CACHE[key] = None
     return _FIELD_CACHE[key]
@@ -386,11 +403,27 @@ def _unpack_pressure_row(row):
 
 
 def TC_pressure(
-    basin, latlist, lonlist, landfalllist, year, storms, monthlist, TC_data, phase=None
+    basin,
+    latlist,
+    lonlist,
+    landfalllist,
+    year,
+    storms,
+    monthlist,
+    TC_data,
+    phase=None,
+    env_years=None,
 ):
     """
     Calculate TC pressure along synthetic tracks.
     Logic is identical to the original; only I/O is cached.
+
+    Parameters
+    ----------
+    env_years : dict {month: year} or None
+        If set, each storm uses the historical year assigned to its genesis
+        month for loading environmental fields (VWS/RH/PI/MSLP).
+        Falls back to phase-mean if year-specific file is not found.
     """
     idx = _BASIN_IDX[basin]
     lat0, lat1, lon0, lon1 = _BASIN_BOUNDS[basin]
@@ -434,11 +467,20 @@ def TC_pressure(
 
         # OPTIMIZATION: Load environmental fields via cache.
         # Original called np.loadtxt per storm — now each unique
-        # (stem, month, phase) is parsed once and reused.
-        Penv_field = _load_field_cached("Monthly_mean_MSLP", month, phase=phase)
-        PI_field = _load_field_cached("Monthly_mean_PI", month, phase=phase)
-        VWS_field = _load_field_cached("Monthly_mean_VWS", month, phase=phase)
-        RH_field = _load_field_cached("Monthly_mean_RH600", month, phase=phase)
+        # (stem, month, phase, env_year) is parsed once and reused.
+        env_year = env_years.get(month) if env_years else None
+        Penv_field = _load_field_cached(
+            "Monthly_mean_MSLP", month, phase=phase, env_year=env_year
+        )
+        PI_field = _load_field_cached(
+            "Monthly_mean_PI", month, phase=phase, env_year=env_year
+        )
+        VWS_field = _load_field_cached(
+            "Monthly_mean_VWS", month, phase=phase, env_year=env_year
+        )
+        RH_field = _load_field_cached(
+            "Monthly_mean_RH600", month, phase=phase, env_year=env_year
+        )
 
         constants_pressure = JM_pressure[idx][month]
         constants_pressure = np.array(constants_pressure)
@@ -570,7 +612,7 @@ def TC_pressure(
 
                         if p < mpi:
                             if dp0 < 0:
-                                if count < 6:
+                                if count < 5:
                                     count = count + 1
                                 else:
                                     dp0 = abs(dp0)
@@ -751,7 +793,7 @@ def TC_pressure(
 
                         if p < mpi:
                             if dp0 < 0:
-                                if count < 6:
+                                if count < 5:
                                     count = count + 1
                                 else:
                                     dp0 = abs(dp0)

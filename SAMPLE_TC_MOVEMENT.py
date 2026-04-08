@@ -13,7 +13,11 @@ SIENA VWS update:
 
 import numpy as np
 from SELECT_BASIN import Basins_WMO
-from siena_utils import normalize_phase, load_monthly_field
+from siena_utils import (
+    normalize_phase,
+    load_monthly_field,
+    load_field_with_year_fallback,
+)
 import os
 import sys
 
@@ -30,17 +34,19 @@ _BASIN_BOUNDS = {
     "WP": (5, 60, 100, 180),
 }
 
-# ── VWS field cache (loaded once per (month, phase), reused across storms) ──
+# ── VWS field cache (loaded once per (month, phase, year), reused across storms) ──
 _VWS_CACHE = {}
 
 
-def _load_vws_cached(month, phase=None):
-    """Load a monthly VWS field, caching the result."""
-    key = (month, normalize_phase(phase))
+def _load_vws_cached(month, phase=None, env_year=None):
+    """Load a monthly VWS field, caching the result.
+    If env_year is set, load the year-specific field (with phase-mean fallback).
+    """
+    key = (month, normalize_phase(phase), env_year)
     if key not in _VWS_CACHE:
         try:
-            _VWS_CACHE[key] = load_monthly_field(
-                dir_path, "Monthly_mean_VWS", month, phase=phase
+            _VWS_CACHE[key] = load_field_with_year_fallback(
+                dir_path, "VWS", month, phase=phase, env_year=env_year
             )
         except Exception:
             _VWS_CACHE[key] = None
@@ -87,7 +93,14 @@ def Check_if_landfall(lat, lon, lat1, lon0, land_mask):
     return land_mask[y_coord, x_coord]
 
 
-def TC_movement(lon_genesis_list, lat_genesis_list, basin, monthlist=None, phase=None):
+def TC_movement(
+    lon_genesis_list,
+    lat_genesis_list,
+    basin,
+    monthlist=None,
+    phase=None,
+    env_years=None,
+):
     """
     Simulate TC track movement.
 
@@ -98,6 +111,8 @@ def TC_movement(lon_genesis_list, lat_genesis_list, basin, monthlist=None, phase
     basin : str, basin code
     monthlist : list of int, genesis month per storm (required for VWS lookup)
     phase : str or None, ENSO phase for loading phase-specific VWS field
+    env_years : dict {month: year} or None. If set, each storm uses the
+                historical year assigned to its genesis month.
 
     Returns
     -------
@@ -128,7 +143,8 @@ def TC_movement(lon_genesis_list, lat_genesis_list, basin, monthlist=None, phase
         storm_month = monthlist[storm_i] if monthlist is not None else None
         vws_field = None
         if storm_month is not None:
-            vws_field = _load_vws_cached(storm_month, phase=phase)
+            env_year = env_years.get(storm_month) if env_years else None
+            vws_field = _load_vws_cached(storm_month, phase=phase, env_year=env_year)
 
         latlijst = [lat_genesis]
         lonlijst = [lon_genesis]

@@ -44,6 +44,9 @@ climatology.climatology_data(period)
 
 # Then derive pooled + phase-aware climatologies from the selected index.
 if climate_index.lower() != "none":
-    climatology.build_pooled_and_phase_climatologies(
+    climate_df = climatology.build_pooled_and_phase_climatologies(
         period, climate_index=climate_index, threshold=threshold
     )
+
+    # Save individual year-month fields for interannual resampling
+    climatology.save_yearly_env_fields(climate_df, period)
