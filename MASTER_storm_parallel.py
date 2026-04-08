@@ -48,14 +48,14 @@ def _run_single_job(job, years_per_loop, use_yearly=True):
     from SAMPLE_STARTING_POINT import Startingpoint
     from SAMPLE_TC_MOVEMENT import TC_movement
     from SAMPLE_TC_PRESSURE import TC_pressure
-    from siena_utils import load_year_pool, draw_env_years_for_season
+    from siena_utils import load_env_pool, draw_env_years_for_season
 
     # ---- Load year pool (tiny JSON, fast) ----
-    year_pool = None
+    env_pool = None
     if use_yearly:
-        year_pool = load_year_pool(__location__)
-        if not year_pool:
-            year_pool = None
+        env_pool = load_env_pool(__location__)
+        if not env_pool:
+            env_pool = None
 
     # Get active-season months for this basin
     _, season_months, *_ = Basins_WMO(basin, phase=phase)
@@ -64,7 +64,7 @@ def _run_single_job(job, years_per_loop, use_yearly=True):
     pid = os.getpid()
     print(
         f"[PID {pid}] Starting: basin={basin} phase={phase} loop={loop_idx} ({years_per_loop} years)"
-        f"{' [year resampling]' if year_pool else ''}"
+        f"{' [year resampling]' if env_pool else ''}"
     )
     t0 = time.time()
 
@@ -76,8 +76,8 @@ def _run_single_job(job, years_per_loop, use_yearly=True):
 
         # ── Draw historical years per month for this simulated year ──
         env_years = None
-        if year_pool is not None:
-            env_years = draw_env_years_for_season(year_pool, phase, active_months)
+        if env_pool is not None:
+            env_years = draw_env_years_for_season(env_pool, phase, active_months)
 
         if storms_per_year > 0:
             lon_genesis_list, lat_genesis_list = Startingpoint(

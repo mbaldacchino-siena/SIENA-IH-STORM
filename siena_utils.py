@@ -44,14 +44,15 @@ def load_monthly_field(base_dir, stem, month, phase=None):
 
 
 # =========================================================================
-# Year-level environmental field resampling
+# Month-level environmental field resampling
 # =========================================================================
 # Instead of loading phase-mean climatological fields (which suppress
 # interannual variability and compress the intensity tail), we store
 # individual year-month fields and draw a random historical year per
-# simulated year. All storms in that simulated year share the same
-# environmental context — preserving within-year coherence and the
-# joint VWS-RH-PI covariance that drives extreme events.
+# active-season month. The pool is keyed by (phase, month): for an LN
+# September, only historical years where September was actually LN are
+# eligible. This guarantees phase-consistent resampling while preserving
+# the joint VWS-RH-PI covariance that drives extreme events.
 #
 # Storage layout:
 #   env_yearly/
@@ -59,10 +60,10 @@ def load_monthly_field(base_dir, stem, month, phase=None):
 #     RH600_{year}_{month}.npy
 #     MSLP_{year}_{month}.npy
 #     PI_{year}_{month}.npy
-#     year_pool.json
+#     env_pool.json          ← {phase: {month: [years]}}
 #
 # For seasonal forecasts: place forecast fields in the same directory
-# with a synthetic "year" label (e.g. 9999) and pass env_year=9999.
+# with a synthetic "year" label (e.g. 9999) and run with --env-year 9999.
 # =========================================================================
 
 import json
@@ -77,38 +78,41 @@ def _env_yearly_dir(base_dir):
     return d
 
 
-def save_year_pool(base_dir, year_pool):
+def save_env_pool(base_dir, env_pool):
     """
-    Save the year pool mapping: {phase_str: [year1, year2, ...]}.
+    Save the environment pool: {phase: {month_str: [year1, year2, ...]}}.
+
+    Each (phase, month) maps to historical years where that specific month
+    was in that ENSO phase. This guarantees phase-consistent resampling.
 
     Parameters
     ----------
     base_dir : str, project directory
-    year_pool : dict, e.g. {"LN": [1988, 1999, ...], "NEU": [...], "EN": [...]}
+    env_pool : dict, e.g. {"LN": {"6": [1988, 1999], "9": [1995]}, ...}
     """
-    path = os.path.join(_env_yearly_dir(base_dir), "year_pool.json")
-    # Convert numpy int types to plain int for JSON serialization
-    pool = {k: [int(y) for y in v] for k, v in year_pool.items()}
+    path = os.path.join(_env_yearly_dir(base_dir), "env_pool.json")
+    pool = {}
+    for ph, months in env_pool.items():
+        if isinstance(months, dict):
+            pool[ph] = {str(m): [int(y) for y in yrs] for m, yrs in months.items()}
+        else:
+            pool[ph] = [int(y) for y in months]
     with open(path, "w") as f:
         json.dump(pool, f, indent=2)
 
 
-def load_year_pool(base_dir):
+def load_env_pool(base_dir):
     """
-    Load the year pool mapping.
-
-    Returns
-    -------
-    dict : {phase_str: [year1, year2, ...]}
+    Load the environment pool: {phase: {month_str: [year1, ...]}}.
     """
-    path = os.path.join(_env_yearly_dir(base_dir), "year_pool.json")
+    path = os.path.join(_env_yearly_dir(base_dir), "env_pool.json")
     if not os.path.exists(path):
         return {}
     with open(path) as f:
         return json.load(f)
 
 
-def sample_env_year(year_pool, phase, month):
+def sample_env_year(env_pool, phase, month):
     """
     Draw a random historical year for a specific (phase, month).
 
@@ -118,7 +122,7 @@ def sample_env_year(year_pool, phase, month):
 
     Parameters
     ----------
-    year_pool : dict from load_year_pool()
+    env_pool : dict from load_env_pool()
     phase : str, "LN" / "NEU" / "EN"
     month : int, calendar month (1-12)
 
@@ -130,14 +134,14 @@ def sample_env_year(year_pool, phase, month):
     mo_key = str(int(month))
 
     if phase is not None:
-        phase_pool = year_pool.get(phase, {})
+        phase_pool = env_pool.get(phase, {})
         years = phase_pool.get(mo_key, [])
         if years:
             return int(np.random.choice(years))
 
     # Fallback: pool across all phases for this month
     all_years = []
-    for ph_pool in year_pool.values():
+    for ph_pool in env_pool.values():
         if isinstance(ph_pool, dict):
             all_years.extend(ph_pool.get(mo_key, []))
         elif isinstance(ph_pool, list):
@@ -148,7 +152,7 @@ def sample_env_year(year_pool, phase, month):
     return None
 
 
-def draw_env_years_for_season(year_pool, phase, active_months):
+def draw_env_years_for_season(env_pool, phase, active_months):
     """
     Draw one historical year per active-season month for a simulated year.
 
@@ -158,7 +162,7 @@ def draw_env_years_for_season(year_pool, phase, active_months):
 
     Parameters
     ----------
-    year_pool : dict from load_year_pool()
+    env_pool : dict from load_env_pool()
     phase : str, "LN" / "NEU" / "EN"
     active_months : list of int, e.g. [6, 7, 8, 9, 10, 11] for NA
 
@@ -169,7 +173,7 @@ def draw_env_years_for_season(year_pool, phase, active_months):
     """
     env_years = {}
     for m in active_months:
-        env_years[m] = sample_env_year(year_pool, phase, m)
+        env_years[m] = sample_env_year(env_pool, phase, m)
     return env_years
 
 

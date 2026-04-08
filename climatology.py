@@ -617,7 +617,7 @@ def save_yearly_env_fields(climate_df, period):
 
     Storage: env_yearly/{stem}_{year}_{month}.npy
 
-    Also builds a year_pool.json mapping each ENSO phase to its available
+    Also builds an env_pool.json mapping each (ENSO phase, month) to its
     historical years, used at runtime for sampling.
 
     For seasonal forecast mode: place forecast fields in the same directory
@@ -629,7 +629,7 @@ def save_yearly_env_fields(climate_df, period):
     climate_df : DataFrame with [year, month, climate_index, phase]
     period : (start_year, end_year)
     """
-    from siena_utils import save_yearly_field, save_year_pool, _env_yearly_dir
+    from siena_utils import save_yearly_field, save_env_pool, _env_yearly_dir
 
     local_path = os.getcwd()
     out_dir = _env_yearly_dir(local_path)
@@ -660,7 +660,7 @@ def save_yearly_env_fields(climate_df, period):
         for mo in month_pool[ph]:
             month_pool[ph][mo].sort()
 
-    save_year_pool(local_path, month_pool)
+    save_env_pool(local_path, month_pool)
     for ph in ["LN", "NEU", "EN"]:
         month_counts = {m: len(yrs) for m, yrs in month_pool[ph].items()}
         print(f"  {ph} month pool: {month_counts}")
