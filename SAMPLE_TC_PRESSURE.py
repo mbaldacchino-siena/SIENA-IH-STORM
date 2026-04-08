@@ -34,7 +34,12 @@ import os
 dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 import random
-from siena_utils import normalize_phase, phase_code, load_monthly_field
+from siena_utils import (
+    normalize_phase,
+    phase_code,
+    load_monthly_field,
+    load_field_with_year_fallback,
+)
 
 # ==========================================================================
 # MODULE-LEVEL CACHES — loaded once, reused across all calls
@@ -55,18 +60,30 @@ def _get_coastal_data():
     return _COASTAL_CACHE
 
 
-# Cache 2: Monthly environmental fields keyed by (stem, month, phase_str)
+# Cache 2: Monthly environmental fields keyed by (stem, month, phase_str, env_year)
 # Original code called np.loadtxt (text parsing of 721×1440 grids) per storm.
 # Multiple storms in the same month re-parsed the same file.
 _FIELD_CACHE = {}
 
 
-def _load_field_cached(stem, month, phase=None):
-    """Load a monthly field, caching the result for subsequent calls."""
-    key = (stem, month, normalize_phase(phase))
+def _load_field_cached(stem, month, phase=None, env_year=None):
+    """Load a monthly field, caching the result for subsequent calls.
+    If env_year is set, load year-specific field with phase-mean fallback.
+    """
+    key = (stem, month, normalize_phase(phase), env_year)
     if key not in _FIELD_CACHE:
         try:
-            _FIELD_CACHE[key] = load_monthly_field(dir_path, stem, month, phase=phase)
+            if env_year is not None:
+                # Year-specific: stem is e.g. "VWS", not "Monthly_mean_VWS"
+                # load_field_with_year_fallback handles the prefix
+                _stem = stem.replace("Monthly_mean_", "")
+                _FIELD_CACHE[key] = load_field_with_year_fallback(
+                    dir_path, _stem, month, phase=phase, env_year=env_year
+                )
+            else:
+                _FIELD_CACHE[key] = load_monthly_field(
+                    dir_path, stem, month, phase=phase
+                )
         except Exception:
             _FIELD_CACHE[key] = None
     return _FIELD_CACHE[key]
@@ -267,7 +284,7 @@ def decay_after_landfall(lat_landfall, lon_landfall, latlijst, lonlijst, p, coef
     j = 1
     pres_landfall = p
 
-    while v > 35 or j < len(latlijst):
+    while v > 35 and j < len(latlijst):
         try:
             D = haversine(lat_landfall, lon_landfall, latlijst[j], lonlijst[j])
             if D == 0.0:
@@ -280,15 +297,14 @@ def decay_after_landfall(lat_landfall, lon_landfall, latlijst, lonlijst, p, coef
                 b_KM = D1 * t * (t0 - t)
                 C_KM = M * np.log(D / D0) + b_KM
                 v = vb + (R * v0 - vb) * np.exp(-alpha * t) - C_KM
+                if v * 0.51444 < 18.0:
+                    return pressure_decay, wind_decay
                 pres_landfall = Calculate_Pressure(v * 0.514444, Penv, coef)
                 pres_landfall = round(pres_landfall, 1)
                 pressure_decay.append(pres_landfall)
                 wind_decay.append(v * 0.514444)
-                if v * 0.51444 < 18.0:
-                    return pressure_decay, wind_decay
-                else:
-                    t = t + 3
-                    j = j + 1
+                t = t + 3
+                j = j + 1
             else:
                 j = j + 1
                 t = t + 3
@@ -324,9 +340,34 @@ def add_parameters_to_TC_data(
     lijst,
     TC_data,
     idx,
+    Penv_field=None,
+    env_year=None,
 ):
+    """
+    Assemble per-timestep TC output rows.
+
+    Output columns (0-indexed):
+        0  year
+        1  month
+        2  storm_number
+        3  timestep
+        4  basin_idx
+        5  lat
+        6  lon
+        7  central_pressure (hPa)
+        8  max_wind (m/s, 10-min sustained)
+        9  rmax (km)
+       10  category (Saffir-Simpson, -1 if sub-TS)
+       11  landfall (1=over land, 0=over ocean)
+       12  dist_to_coast (km)
+       13  penv (hPa) — environmental pressure at (lat, lon)
+       14  env_year — historical year used for environmental fields (-1 if N/A)
+    """
     rmax_list = Add_Rmax(pressure_list)
     x = min(len(landfallfull), len(lijst))
+
+
+    _env_year_val = int(env_year) if env_year is not None else -1
 
     for l in range(0, x):
         if landfallfull[l] == 1.0:
@@ -334,6 +375,16 @@ def add_parameters_to_TC_data(
         else:
             # Uses cached coastal data (no file I/O)
             dist = distance_from_coast(lonfull[l], latfull[l])
+
+        # ── Penv: look up from the MSLP field at (lat, lon) ──
+        penv = -1.0
+        if Penv_field is not None and l < len(latfull):
+            _li = _lat_to_idx(latfull[l])
+            _lo = _lon_to_idx(lonfull[l])
+            if 0 <= _li < Penv_field.shape[0] and 0 <= _lo < Penv_field.shape[1]:
+                _v = float(Penv_field[_li, _lo])
+                if np.isfinite(_v):
+                    penv = round(_v, 1)
 
         category = TC_Category(wind_list[l])
         TC_data.append(
@@ -351,6 +402,8 @@ def add_parameters_to_TC_data(
                 category,
                 landfallfull[l],
                 dist,
+                penv,
+                _env_year_val,
             ]
         )
 
@@ -387,11 +440,27 @@ def _unpack_pressure_row(row):
 
 
 def TC_pressure(
-    basin, latlist, lonlist, landfalllist, year, storms, monthlist, TC_data, phase=None
+    basin,
+    latlist,
+    lonlist,
+    landfalllist,
+    year,
+    storms,
+    monthlist,
+    TC_data,
+    phase=None,
+    env_years=None,
 ):
     """
     Calculate TC pressure along synthetic tracks.
     Logic is identical to the original; only I/O is cached.
+
+    Parameters
+    ----------
+    env_years : dict {month: year} or None
+        If set, each storm uses the historical year assigned to its genesis
+        month for loading environmental fields (VWS/RH/PI/MSLP).
+        Falls back to phase-mean if year-specific file is not found.
     """
     idx = _BASIN_IDX[basin]
     lat0, lat1, lon0, lon1 = _BASIN_BOUNDS[basin]
@@ -435,11 +504,20 @@ def TC_pressure(
 
         # OPTIMIZATION: Load environmental fields via cache.
         # Original called np.loadtxt per storm — now each unique
-        # (stem, month, phase) is parsed once and reused.
-        Penv_field = _load_field_cached("Monthly_mean_MSLP", month, phase=phase)
-        PI_field = _load_field_cached("Monthly_mean_PI", month, phase=phase)
-        VWS_field = _load_field_cached("Monthly_mean_VWS", month, phase=phase)
-        RH_field = _load_field_cached("Monthly_mean_RH600", month, phase=phase)
+        # (stem, month, phase, env_year) is parsed once and reused.
+        env_year = env_years.get(month) if env_years else None
+        Penv_field = _load_field_cached(
+            "Monthly_mean_MSLP", month, phase=phase, env_year=env_year
+        )
+        PI_field = _load_field_cached(
+            "Monthly_mean_PI", month, phase=phase, env_year=env_year
+        )
+        VWS_field = _load_field_cached(
+            "Monthly_mean_VWS", month, phase=phase, env_year=env_year
+        )
+        RH_field = _load_field_cached(
+            "Monthly_mean_RH600", month, phase=phase, env_year=env_year
+        )
 
         constants_pressure = JM_pressure[idx][month]
         constants_pressure = np.array(constants_pressure)
@@ -511,6 +589,8 @@ def TC_pressure(
                             pressure_list,
                             TC_data,
                             idx,
+                            Penv_field=Penv_field,
+                            env_year=env_year,
                         )
                         i = 1000000000000000
 
@@ -571,7 +651,7 @@ def TC_pressure(
 
                         if p < mpi:
                             if dp0 < 0:
-                                if count < 2:
+                                if count < 5:
                                     count = count + 1
                                 else:
                                     dp0 = abs(dp0)
@@ -595,6 +675,8 @@ def TC_pressure(
                                 pressure_list,
                                 TC_data,
                                 idx,
+                                Penv_field=Penv_field,
+                                env_year=env_year,
                             )
                             i = 10000000000000000000000000000000
 
@@ -637,6 +719,8 @@ def TC_pressure(
                                 pressure_list,
                                 TC_data,
                                 idx,
+                                Penv_field=Penv_field,
+                                env_year=env_year,
                             )
                             i = 10000000000000000000000000.0
 
@@ -666,6 +750,8 @@ def TC_pressure(
                             pressure_list,
                             TC_data,
                             idx,
+                            Penv_field=Penv_field,
+                            env_year=env_year,
                         )
                         i = 1000000000000
 
@@ -692,6 +778,8 @@ def TC_pressure(
                             pressure_list,
                             TC_data,
                             idx,
+                            Penv_field=Penv_field,
+                            env_year=env_year,
                         )
                         i = 1000000000000000
 
@@ -752,7 +840,7 @@ def TC_pressure(
 
                         if p < mpi:
                             if dp0 < 0:
-                                if count < 2:
+                                if count < 5:
                                     count = count + 1
                                 else:
                                     dp0 = abs(dp0)
@@ -778,6 +866,8 @@ def TC_pressure(
                                 pressure_list,
                                 TC_data,
                                 idx,
+                                Penv_field=Penv_field,
+                                env_year=env_year,
                             )
                             i = 10000000000000000000000000000000
 
@@ -802,6 +892,8 @@ def TC_pressure(
                     pressure_list,
                     TC_data,
                     idx,
+                    Penv_field=Penv_field,
+                    env_year=env_year,
                 )
                 i = 100000000000000000.0
 
@@ -819,6 +911,8 @@ def TC_pressure(
                 pressure_list,
                 TC_data,
                 idx,
+                Penv_field=Penv_field,
+                env_year=env_year,
             )
 
     return TC_data

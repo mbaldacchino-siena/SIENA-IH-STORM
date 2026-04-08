@@ -65,6 +65,44 @@ def _upscale_to_target(coarse, target_shape):
     return zoom(coarse, (zy, zx), order=1)
 
 
+def _nanfill_nearest(arr, max_iter=15):
+    """
+    Fill NaN cells with nearest finite neighbor (iterative).
+
+    At 1° resolution, coastal cells are often NaN (tcpyPI fails over land
+    or where SST < 5°C). If left unfilled, scipy.ndimage.zoom propagates
+    NaN into adjacent ocean cells during upscaling to 0.25°.
+
+    This iterative nearest-neighbor fill expands the ocean PI values into
+    adjacent land/NaN cells, so bilinear upscaling sees clean boundaries.
+    The filled values are physically reasonable because PI varies smoothly
+    (~1-3 hPa per degree) near coastlines.
+    """
+    filled = arr.copy()
+    for _ in range(max_iter):
+        mask = ~np.isfinite(filled)
+        if not mask.any():
+            break
+        # For each NaN cell, take the mean of finite neighbors
+        padded = np.pad(filled, 1, mode="constant", constant_values=np.nan)
+        neighbor_sum = np.zeros_like(filled)
+        neighbor_count = np.zeros_like(filled)
+        for di in [-1, 0, 1]:
+            for dj in [-1, 0, 1]:
+                if di == 0 and dj == 0:
+                    continue
+                shifted = padded[
+                    1 + di : 1 + di + filled.shape[0], 1 + dj : 1 + dj + filled.shape[1]
+                ]
+                valid = np.isfinite(shifted)
+                neighbor_sum += np.where(valid, shifted, 0.0)
+                neighbor_count += valid.astype(float)
+        # Only fill where we have at least one valid neighbor
+        fillable = mask & (neighbor_count > 0)
+        filled[fillable] = neighbor_sum[fillable] / neighbor_count[fillable]
+    return filled
+
+
 def _simplified_pi_point(sst_K, mslp_Pa):
     """
     Simplified PI estimate when tcpyPI is not available.
@@ -271,6 +309,9 @@ def build_phase_specific_pi_climatologies(oni_df, era5_paths, out_dir):
                     sst_c = _coarsen_to_match(sst, tq_spatial)
                     mslp_c = _coarsen_to_match(mslp, tq_spatial)
                     pmin, vmax = compute_pi_field_tcpyPI(sst_c, mslp_c, t, q, p_lev_hPa)
+                    # Fill coastal NaN before upscaling (bilinear would propagate them)
+                    pmin = _nanfill_nearest(pmin)
+                    vmax = _nanfill_nearest(vmax)
                     # Upscale back to fine grid for consistency with other fields
                     if fine_shape and pmin.shape != fine_shape:
                         pmin = _upscale_to_target(pmin, fine_shape)
@@ -302,8 +343,12 @@ def build_phase_specific_pi_climatologies(oni_df, era5_paths, out_dir):
                     pmin_p, vmax_p = compute_pi_field_tcpyPI(
                         sst_pc, mslp_pc, t_p, q_p, p_lev_hPa
                     )
+                    # Fill coastal NaN before upscaling
+                    pmin_p = _nanfill_nearest(pmin_p)
+                    vmax_p = _nanfill_nearest(vmax_p)
                     if fine_shape and pmin_p.shape != fine_shape:
                         pmin_p = _upscale_to_target(pmin_p, fine_shape)
+                        vmax_p = _upscale_to_target(vmax_p, fine_shape)
                 else:
                     pmin_p, vmax_p = compute_pi_field_simplified(sst_p, mslp_p)
             else:
