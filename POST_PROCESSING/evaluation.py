@@ -148,11 +148,6 @@ STORM_COLUMNS = [
 
 def load_storm_file(filepath: str) -> pd.DataFrame:
     """Load a single STORM .txt file into a DataFrame."""
-    
-    return df
-
-def load_storm_file(filepath: str) -> pd.DataFrame:
-    """Load a single STORM .txt file into a DataFrame."""
     df = pd.read_csv(
         filepath,
         header=None,
@@ -178,7 +173,9 @@ def load_storm_file(filepath: str) -> pd.DataFrame:
     df = df.dropna(subset=["wind", "pressure"])
     n_dropped = n_before - len(df)
     if n_dropped > 0:
-        print(f"  Warning: dropped {n_dropped} rows with NaN wind in {os.path.basename(filepath)}")
+        print(
+            f"  Warning: dropped {n_dropped} rows with NaN wind in {os.path.basename(filepath)}"
+        )
     return df
 
 
@@ -874,109 +871,14 @@ def landfall_intensity(
 # ---------- 8. Return periods at coastal cities ----------
 
 
-def _extract_city_max_winds(
-    catalog: pd.DataFrame,
-    city_lat: float,
-    city_lon: float,
-    radius_km: float = 111.0,
-    min_wind: float = 18.0,
-) -> np.ndarray:
-    """
-    For each TC in the catalog, find the maximum wind speed within
-    *radius_km* of the city.  Returns array of per-storm max winds
-    (only storms that passed within radius and exceeded min_wind).
-    """
-    # Convert city lon to 0–360 if negative
-    clon = city_lon if city_lon >= 0 else city_lon + 360.0
-
-    # Vectorised pre-filter: rough lat/lon box (~ 1° ≈ 111 km)
-    dlat_deg = radius_km / 111.0
-    dlon_deg = radius_km / (111.0 * max(cos(radians(city_lat)), 0.1))
-
-    mask = (
-        (catalog["lat"] >= city_lat - dlat_deg)
-        & (catalog["lat"] <= city_lat + dlat_deg)
-        & (catalog["lon"] >= clon - dlon_deg)
-        & (catalog["lon"] <= clon + dlon_deg)
-    )
-    nearby = catalog.loc[mask].copy()
-    if nearby.empty:
-        return np.array([])
-
-    # Exact haversine distance
-    nearby["dist_km"] = nearby.apply(
-        lambda r: haversine(r["lon"], r["lat"], clon, city_lat), axis=1
-    )
-    within = nearby[nearby["dist_km"] <= radius_km]
-    if within.empty:
-        return np.array([])
-
-    # Max wind per storm
-    storm_max = within.groupby("global_storm_uid")["wind"].max()
-    storm_max = storm_max[storm_max >= min_wind]
-    return storm_max.values
-
-
-def return_periods_at_city(
-    catalog: list[str],
-    n_years: float,
-    city_lat: float,
-    city_lon: float,
-    radius_km: float = 111.0,
-    min_wind: float = 18.0,
-) -> pd.DataFrame:
-    """
-    Compute empirical wind-speed return periods at a single city using
-    the Weibull plotting position (consistent with IH-STORM / STORM
-    methodology).
-
-    Parameters
-    ----------
-    catalog : full catalog DataFrame
-    n_years : number of simulated years
-    city_lat, city_lon : city coordinates (lon can be negative)
-    radius_km : search radius
-    min_wind : minimum wind threshold (m/s)
-
-    Returns
-    -------
-    DataFrame with columns [wind_ms, rank, exceedance_prob, return_period_yr]
-    sorted by descending wind.
-    """
-    winds = _extract_city_max_winds(catalog, city_lat, city_lon, radius_km, min_wind)
-    if len(winds) == 0:
-        return pd.DataFrame(
-            columns=["wind_ms", "rank", "exceedance_prob", "return_period_yr"]
-        )
-
-    winds_sorted = np.sort(winds)[::-1]  # descending
-    n_events = len(winds_sorted)
-    ranks = np.arange(1, n_events + 1)
-
-    # Weibull plotting position: P_exc = rank / (N + 1)
-    # Then annualise: P_annual = P_exc * (N / n_years)
-    weibull_prob = ranks / (n_events + 1.0)
-    annual_exc = weibull_prob * (n_events / n_years)
-    rp = 1.0 / annual_exc
-
-    return pd.DataFrame(
-        {
-            "wind_ms": winds_sorted,
-            "rank": ranks,
-            "exceedance_prob": annual_exc,
-            "return_period_yr": rp,
-        }
-    )
-
-
 def return_periods_at_cities(
     catalog: list[str],
     n_years: float,
     cities: Optional[List[dict]] = None,
-    radius_km: float = 111.0,
     min_wind: float = 18.0,
     target_rp: Optional[np.ndarray] = None,
     model: str | None = None,
+    t_interp: float | None = None,
 ) -> pd.DataFrame:
     """
     Compute return-period curves at multiple cities, optionally
@@ -1028,12 +930,26 @@ def return_periods_at_cities(
             crs="EPSG:4326",
         )
 
-        scenarios = [
-            TCTracks.from_simulations_storm(i)
-            for i in catalog
-            if "_" + basin + "_" in i.split("/")[-1]
-        ]
+        if "pressure" in catalog[0]:
+            from climada_utils import add_p_env
+
+            scenarios = [
+                add_p_env(path_to_file=i, tracks=TCTracks.from_simulations_storm(i))
+                for i in catalog
+                if ("_" + basin + "_" in i.split("/")[-1])
+            ]
+        else:
+            scenarios = [
+                TCTracks.from_simulations_storm(i)
+                for i in catalog
+                if "_" + basin + "_" in i.split("/")[-1]
+            ]
+
         pooled_tracks = pool_tctracks(scenarios, deduplicate=False)
+
+        if t_interp is not None:
+            pooled_tracks.equal_timestep(time_step=t_interp)
+
         haz = TropCyclone.from_tracks(
             pooled_tracks,
             centroids=centroids,

@@ -3,10 +3,10 @@ from climada.hazard import TCTracks
 from pathlib import Path
 
 
-def add_p_env(path_to_file : str | Path, tracks : TCTracks) -> TCTracks:
+def add_p_env(path_to_file: str | Path, tracks: TCTracks) -> TCTracks:
 
     # Read raw file to grab column 14 (0-indexed: col 13)
-    raw = np.loadtxt(path_to_file)  # STORM uses whitespace-delimited
+    raw = np.loadtxt(path_to_file, delimiter=",")  # STORM uses whitespace-delimited
 
     # The tracks in tracks.data are built sequentially from the file,
     # one per (year, storm_num) pair, in file order.
