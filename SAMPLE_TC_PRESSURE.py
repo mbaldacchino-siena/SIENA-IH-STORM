@@ -361,30 +361,11 @@ def add_parameters_to_TC_data(
        11  landfall (1=over land, 0=over ocean)
        12  dist_to_coast (km)
        13  penv (hPa) — environmental pressure at (lat, lon)
-       14  vtrans (m/s) — forward translational speed
-       15  heading (deg) — direction of motion, 0=N, 90=E
-       16  env_year — historical year used for environmental fields (-1 if N/A)
+       14  env_year — historical year used for environmental fields (-1 if N/A)
     """
     rmax_list = Add_Rmax(pressure_list)
     x = min(len(landfallfull), len(lijst))
 
-    # ── Precompute forward speed and heading from positions ──
-    # dt = 3 hours = 10800 seconds (3-hourly timestep)
-    dt_seconds = 3.0 * 3600.0
-    vtrans_list = [0.0] * x
-    heading_list = [0.0] * x
-    for l in range(1, min(x, len(latfull))):
-        dist_km = haversine(latfull[l - 1], lonfull[l - 1], latfull[l], lonfull[l])
-        vtrans_list[l] = (dist_km * 1000.0) / dt_seconds  # m/s
-
-        # Heading: bearing from previous position to current
-        dlat = latfull[l] - latfull[l - 1]
-        dlon = lonfull[l] - lonfull[l - 1]
-        heading_list[l] = math.degrees(math.atan2(dlon, dlat)) % 360.0
-    # First timestep: copy from second (no previous position)
-    if x > 1:
-        vtrans_list[0] = vtrans_list[1]
-        heading_list[0] = heading_list[1]
 
     _env_year_val = int(env_year) if env_year is not None else -1
 
@@ -422,8 +403,6 @@ def add_parameters_to_TC_data(
                 landfallfull[l],
                 dist,
                 penv,
-                round(vtrans_list[l], 3),
-                round(heading_list[l], 1),
                 _env_year_val,
             ]
         )
