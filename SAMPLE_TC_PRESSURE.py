@@ -340,9 +340,53 @@ def add_parameters_to_TC_data(
     lijst,
     TC_data,
     idx,
+    Penv_field=None,
+    env_year=None,
 ):
+    """
+    Assemble per-timestep TC output rows.
+
+    Output columns (0-indexed):
+        0  year
+        1  month
+        2  storm_number
+        3  timestep
+        4  basin_idx
+        5  lat
+        6  lon
+        7  central_pressure (hPa)
+        8  max_wind (m/s, 10-min sustained)
+        9  rmax (km)
+       10  category (Saffir-Simpson, -1 if sub-TS)
+       11  landfall (1=over land, 0=over ocean)
+       12  dist_to_coast (km)
+       13  penv (hPa) — environmental pressure at (lat, lon)
+       14  vtrans (m/s) — forward translational speed
+       15  heading (deg) — direction of motion, 0=N, 90=E
+       16  env_year — historical year used for environmental fields (-1 if N/A)
+    """
     rmax_list = Add_Rmax(pressure_list)
     x = min(len(landfallfull), len(lijst))
+
+    # ── Precompute forward speed and heading from positions ──
+    # dt = 3 hours = 10800 seconds (3-hourly timestep)
+    dt_seconds = 3.0 * 3600.0
+    vtrans_list = [0.0] * x
+    heading_list = [0.0] * x
+    for l in range(1, min(x, len(latfull))):
+        dist_km = haversine(latfull[l - 1], lonfull[l - 1], latfull[l], lonfull[l])
+        vtrans_list[l] = (dist_km * 1000.0) / dt_seconds  # m/s
+
+        # Heading: bearing from previous position to current
+        dlat = latfull[l] - latfull[l - 1]
+        dlon = lonfull[l] - lonfull[l - 1]
+        heading_list[l] = math.degrees(math.atan2(dlon, dlat)) % 360.0
+    # First timestep: copy from second (no previous position)
+    if x > 1:
+        vtrans_list[0] = vtrans_list[1]
+        heading_list[0] = heading_list[1]
+
+    _env_year_val = int(env_year) if env_year is not None else -1
 
     for l in range(0, x):
         if landfallfull[l] == 1.0:
@@ -350,6 +394,16 @@ def add_parameters_to_TC_data(
         else:
             # Uses cached coastal data (no file I/O)
             dist = distance_from_coast(lonfull[l], latfull[l])
+
+        # ── Penv: look up from the MSLP field at (lat, lon) ──
+        penv = -1.0
+        if Penv_field is not None and l < len(latfull):
+            _li = _lat_to_idx(latfull[l])
+            _lo = _lon_to_idx(lonfull[l])
+            if 0 <= _li < Penv_field.shape[0] and 0 <= _lo < Penv_field.shape[1]:
+                _v = float(Penv_field[_li, _lo])
+                if np.isfinite(_v):
+                    penv = round(_v, 1)
 
         category = TC_Category(wind_list[l])
         TC_data.append(
@@ -367,6 +421,10 @@ def add_parameters_to_TC_data(
                 category,
                 landfallfull[l],
                 dist,
+                penv,
+                round(vtrans_list[l], 3),
+                round(heading_list[l], 1),
+                _env_year_val,
             ]
         )
 
@@ -552,6 +610,8 @@ def TC_pressure(
                             pressure_list,
                             TC_data,
                             idx,
+                            Penv_field=Penv_field,
+                            env_year=env_year,
                         )
                         i = 1000000000000000
 
@@ -636,6 +696,8 @@ def TC_pressure(
                                 pressure_list,
                                 TC_data,
                                 idx,
+                                Penv_field=Penv_field,
+                                env_year=env_year,
                             )
                             i = 10000000000000000000000000000000
 
@@ -678,6 +740,8 @@ def TC_pressure(
                                 pressure_list,
                                 TC_data,
                                 idx,
+                                Penv_field=Penv_field,
+                                env_year=env_year,
                             )
                             i = 10000000000000000000000000.0
 
@@ -707,6 +771,8 @@ def TC_pressure(
                             pressure_list,
                             TC_data,
                             idx,
+                            Penv_field=Penv_field,
+                            env_year=env_year,
                         )
                         i = 1000000000000
 
@@ -733,6 +799,8 @@ def TC_pressure(
                             pressure_list,
                             TC_data,
                             idx,
+                            Penv_field=Penv_field,
+                            env_year=env_year,
                         )
                         i = 1000000000000000
 
@@ -819,6 +887,8 @@ def TC_pressure(
                                 pressure_list,
                                 TC_data,
                                 idx,
+                                Penv_field=Penv_field,
+                                env_year=env_year,
                             )
                             i = 10000000000000000000000000000000
 
@@ -843,6 +913,8 @@ def TC_pressure(
                     pressure_list,
                     TC_data,
                     idx,
+                    Penv_field=Penv_field,
+                    env_year=env_year,
                 )
                 i = 100000000000000000.0
 
@@ -860,6 +932,8 @@ def TC_pressure(
                 pressure_list,
                 TC_data,
                 idx,
+                Penv_field=Penv_field,
+                env_year=env_year,
             )
 
     return TC_data
