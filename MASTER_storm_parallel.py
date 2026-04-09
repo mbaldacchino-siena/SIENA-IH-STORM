@@ -57,9 +57,16 @@ def _run_single_job(job, years_per_loop, use_yearly=True):
         if not env_pool:
             env_pool = None
 
-    # Get active-season months for this basin
-    _, season_months, *_ = Basins_WMO(basin, phase=phase)
-    active_months = sorted(set(season_months)) if season_months else list(range(1, 13))
+    # ── Deterministic active-season months per basin ──
+    # Must NOT come from Basins_WMO (which draws a random Poisson count and
+    # random genesis months — incomplete and non-reproducible).
+    # Read from input.dat to stay in sync with preprocessing.
+    import import_data
+    _BASIN_NAMES = ["EP", "NA", "NI", "SI", "SP", "WP"]
+    _input = import_data.input_data("input.dat")
+    _months_all = _input[4]  # months is the 5th return value
+    _basin_idx = _BASIN_NAMES.index(basin)
+    active_months = _months_all[_basin_idx]
 
     pid = os.getpid()
     print(
