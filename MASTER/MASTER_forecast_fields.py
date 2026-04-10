@@ -27,8 +27,10 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import numpy as np
+import pandas as pd
 import xarray as xr
 from scipy.interpolate import RegularGridInterpolator
 
@@ -39,14 +41,14 @@ except ImportError:
     cdsapi = None
 
 try:
-    from CODE.potential_intensity import compute_pi_field
+    from potential_intensity import compute_pi_field
 
     HAS_PI = True
 except ImportError:
     HAS_PI = False
 
 try:
-    from CODE.potential_intensity import (
+    from potential_intensity import (
         compute_pi_field_tcpyPI,
         compute_pi_field_simplified,
         _nanfill_nearest,
@@ -57,7 +59,7 @@ try:
 except ImportError:
     HAS_TCPYPI = False
 
-from CODE.siena_utils import save_yearly_field, _env_yearly_dir
+from siena_utils import save_yearly_field, _env_yearly_dir
 
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
@@ -332,7 +334,7 @@ def process_forecast(init_date, lead_months, member, env_year):
 
     # Check if tcpyPI is available
     try:
-        from CODE.potential_intensity import (
+        from potential_intensity import (
             HAS_TCPYPI,
             compute_pi_field_tcpyPI,
             compute_pi_field_simplified,
@@ -421,7 +423,7 @@ def process_forecast(init_date, lead_months, member, env_year):
             mslp_native = _sel(ds_sfc, "msl", None)
             # Handle grid mismatch: coarsen sfc to match pl if needed
             if sst_native.shape != native_shape:
-                from CODE.potential_intensity import _coarsen_to_match
+                from potential_intensity import _coarsen_to_match
 
                 sst_native = _coarsen_to_match(sst_native, native_shape)
                 mslp_native = _coarsen_to_match(mslp_native, native_shape)
@@ -478,6 +480,7 @@ def generate_forecast_config(
     env_year : int, synthetic year label for forecast fields
     active_months : list of int, e.g. [6,7,8,9,10,11]
     phase_schedule : dict {month_int: "LN"|"NEU"|"EN"} for ALL 12 months
+        Can be built manually or via build_phase_schedule_from_seas5().
     observed_months : list of int or None, months with real ERA5 data
         If None, inferred from init_date (all months before init month).
     out_path : str
@@ -527,6 +530,286 @@ def generate_forecast_config(
     return config
 
 
+# =========================================================================
+# ONI 3.4 derivation from SEAS5 SST + observed climate_index.csv
+# =========================================================================
+
+# Niño 3.4 region: 5°S–5°N, 170°W–120°W  (in 0–360: 190°–240°)
+NINO34_LAT = (-5.0, 5.0)
+NINO34_LON = (190.0, 240.0)
+
+# Standard 30-year climatology period for ONI baseline
+# (NOAA uses a trailing 30-yr mean, updated every 5 years)
+ONI_CLIM_PERIOD = (1991, 2020)
+
+
+def compute_nino34_sst(sst_field, lats, lons):
+    """
+    Compute area-weighted mean SST over the Niño 3.4 region from a
+    single 2D SST field.
+
+    Parameters
+    ----------
+    sst_field : 2D array (lat, lon), SST in K or °C
+    lats : 1D array, latitude coordinates
+    lons : 1D array, longitude coordinates
+
+    Returns
+    -------
+    float : area-weighted mean SST over Niño 3.4 (same units as input)
+    """
+    lat_mask = (lats >= NINO34_LAT[0]) & (lats <= NINO34_LAT[1])
+    lon_mask = (lons >= NINO34_LON[0]) & (lons <= NINO34_LON[1])
+
+    region = sst_field[np.ix_(lat_mask, lon_mask)]
+    region_lats = lats[lat_mask]
+
+    # Area weighting by cos(latitude)
+    weights = np.cos(np.deg2rad(region_lats))[:, None]
+    weights = np.broadcast_to(weights, region.shape)
+
+    valid = np.isfinite(region)
+    if valid.sum() == 0:
+        return np.nan
+
+    return float(np.nansum(region * weights) / np.nansum(weights * valid))
+
+
+def load_oni_climatology(climate_index_path, clim_period=ONI_CLIM_PERIOD):
+    """
+    Load monthly SST baseline from the observed climate_index.csv for ONI
+    anomaly computation.
+
+    The ONI is defined as the 3-month running mean of Niño 3.4 SST anomaly
+    relative to a 30-year climatological mean.  We compute the per-month
+    mean Niño 3.4 SST from ERA5 historical data (which is what the
+    climatology pipeline already produces).
+
+    For simplicity, we use the ONI values already in climate_index.csv
+    (which are anomalies) for observed months, and compute raw anomalies
+    from SEAS5 SST for forecast months using the ERA5 monthly SST
+    climatology as baseline.
+
+    Parameters
+    ----------
+    climate_index_path : str, path to climate_index.csv
+    clim_period : tuple (start_year, end_year)
+
+    Returns
+    -------
+    dict : {month_int: float} monthly climatological Niño 3.4 SST (K)
+           Returns None if ERA5 SST data not available.
+    """
+    # Try to compute from ERA5 SST NetCDF (most accurate)
+    sst_nc = os.path.join(__location__, "Monthly_mean_SST.nc")
+    if os.path.exists(sst_nc):
+        ds = xr.open_dataset(sst_nc)
+        var = "sst" if "sst" in ds else list(ds.data_vars)[0]
+        time_dim = "valid_time" if "valid_time" in ds.dims else "time"
+        lats = ds.latitude.values
+        lons = ds.longitude.values
+        times = pd.to_datetime(ds[time_dim].values)
+
+        monthly_sums = {m: [] for m in range(1, 13)}
+        for t_idx in range(len(times)):
+            yr, mo = times[t_idx].year, times[t_idx].month
+            if clim_period[0] <= yr <= clim_period[1]:
+                sst = ds[var].isel({time_dim: t_idx}).values
+                val = compute_nino34_sst(sst, lats, lons)
+                if np.isfinite(val):
+                    monthly_sums[mo].append(val)
+        ds.close()
+
+        clim = {}
+        for m in range(1, 13):
+            if monthly_sums[m]:
+                clim[m] = float(np.mean(monthly_sums[m]))
+            else:
+                clim[m] = np.nan
+        return clim
+
+    return None
+
+
+def compute_oni_from_seas5(
+    sst_nc_path, init_date, lead_months, sst_climatology, lats=None, lons=None
+):
+    """
+    Compute monthly Niño 3.4 SST anomalies from a SEAS5 member's SST field.
+
+    Returns raw monthly anomalies (not 3-month running mean) — the running
+    mean is applied in build_phase_schedule_from_seas5() where we combine
+    observed + forecast months.
+
+    Parameters
+    ----------
+    sst_nc_path : str, path to SEAS5 surface NetCDF
+    init_date : str, "YYYY-MM-DD"
+    lead_months : int
+    sst_climatology : dict {month: float}, baseline Niño 3.4 SST from ERA5
+    lats, lons : 1D arrays (optional, read from file if None)
+
+    Returns
+    -------
+    dict : {month_int: float} Niño 3.4 SST anomaly per forecast month
+    """
+    ds = xr.open_dataset(sst_nc_path)
+    lat_name = "latitude" if "latitude" in ds.dims else "lat"
+    lon_name = "longitude" if "longitude" in ds.dims else "lon"
+    if lats is None:
+        lats = ds[lat_name].values
+    if lons is None:
+        lons = ds[lon_name].values
+
+    time_name = None
+    for candidate in ["forecastMonth", "time", "valid_time", "step"]:
+        if candidate in ds.dims:
+            time_name = candidate
+            break
+
+    var = "sst" if "sst" in ds else list(ds.data_vars)[0]
+    init_month = int(init_date[5:7])
+
+    anomalies = {}
+    n_times = ds.sizes.get(time_name, lead_months)
+    for t_idx in range(min(n_times, lead_months)):
+        valid_month = ((init_month - 1) + t_idx + 1) % 12 + 1
+        sst_field = ds[var].isel({time_name: t_idx}).values
+        nino34 = compute_nino34_sst(sst_field, lats, lons)
+        baseline = sst_climatology.get(valid_month, np.nan)
+        if np.isfinite(nino34) and np.isfinite(baseline):
+            anomalies[valid_month] = nino34 - baseline
+        else:
+            anomalies[valid_month] = np.nan
+
+    ds.close()
+    return anomalies
+
+
+def build_phase_schedule_from_seas5(
+    init_date,
+    lead_months,
+    member,
+    climate_index_path="climate_index.csv",
+    threshold=0.5,
+):
+    """
+    Build a complete 12-month phase_schedule by combining:
+      1. Observed ONI from climate_index.csv (months before init)
+      2. SEAS5-derived ONI from this member's SST (forecast months)
+      3. Persistence of last forecast phase (beyond SEAS5 horizon)
+
+    The ONI is computed as a 3-month running mean of Niño 3.4 SST anomaly.
+    Phase thresholds follow standard NOAA convention: ≥+0.5 → EN,
+    ≤−0.5 → LN, else NEU.
+
+    Parameters
+    ----------
+    init_date : str, "YYYY-MM-DD"
+    lead_months : int
+    member : int, ensemble member index
+    climate_index_path : str, path to observed ONI CSV
+    threshold : float, default 0.5
+
+    Returns
+    -------
+    dict : {month_int: "LN"|"NEU"|"EN"} for months 1-12
+    """
+    init_year = int(init_date[:4])
+    init_month = int(init_date[5:7])
+
+    # ── 1. Observed monthly ONI from climate_index.csv ──
+    from siena_utils import load_climate_index_table
+
+    oni_df = load_climate_index_table(climate_index_path)
+
+    observed_oni = {}  # {month: ONI value}
+    for _, row in oni_df.iterrows():
+        if int(row["year"]) == init_year and int(row["month"]) < init_month:
+            observed_oni[int(row["month"])] = float(row["climate_index"])
+        # Also grab last few months of prior year for 3-month running mean
+        if int(row["year"]) == init_year - 1 and int(row["month"]) >= 11:
+            observed_oni[int(row["month"]) - 12] = float(row["climate_index"])
+
+    # ── 2. SEAS5-derived Niño 3.4 anomaly ──
+    sst_climatology = load_oni_climatology(climate_index_path)
+    if sst_climatology is None:
+        print("WARNING: Cannot compute SST climatology. Using NEU as default.")
+        return {m: "NEU" for m in range(1, 13)}
+
+    raw_dir = os.path.join(__location__, "forecast_raw", f"member_{member}")
+    sfc_file = os.path.join(raw_dir, f"seas5_sfc_m{member}.nc")
+    if not os.path.exists(sfc_file):
+        print(f"WARNING: SEAS5 surface file not found: {sfc_file}")
+        return {m: "NEU" for m in range(1, 13)}
+
+    forecast_oni = compute_oni_from_seas5(
+        sfc_file, init_date, lead_months, sst_climatology
+    )
+
+    # ── 3. Merge into a single monthly anomaly series ──
+    # Use a dict keyed by month (1-12) with the best available value
+    monthly_anomaly = {}
+    for m in range(1, 13):
+        if m in observed_oni:
+            monthly_anomaly[m] = observed_oni[m]
+        elif m in forecast_oni:
+            monthly_anomaly[m] = forecast_oni[m]
+        # else: will be filled by persistence below
+
+    # ── 4. Compute 3-month running mean ONI ──
+    # ONI for month M = mean(anomaly[M-1], anomaly[M], anomaly[M+1])
+    # When adjacent months aren't available, use what we have
+    oni_3m = {}
+    for m in range(1, 13):
+        vals = []
+        for offset in [-1, 0, 1]:
+            adj = m + offset
+            # Handle wrap-around and prior-year observations
+            if adj in monthly_anomaly:
+                vals.append(monthly_anomaly[adj])
+            elif adj <= 0 and (adj + 12) in observed_oni:
+                # prior year (stored with negative keys above)
+                vals.append(observed_oni.get(adj, np.nan))
+            elif adj == 13 and 1 in monthly_anomaly:
+                vals.append(monthly_anomaly[1])
+        if vals:
+            oni_3m[m] = float(np.nanmean(vals))
+
+    # ── 5. Classify phase and apply persistence ──
+    def _classify(oni_val):
+        if oni_val >= threshold:
+            return "EN"
+        elif oni_val <= -threshold:
+            return "LN"
+        return "NEU"
+
+    phase_schedule = {}
+    last_phase = "NEU"
+
+    for m in range(1, 13):
+        if m in oni_3m and np.isfinite(oni_3m[m]):
+            phase_schedule[m] = _classify(oni_3m[m])
+            last_phase = phase_schedule[m]
+        else:
+            # Beyond data horizon: persist last known phase
+            phase_schedule[m] = last_phase
+
+    # Log
+    print(f"Phase schedule (member {member}):")
+    for m in range(1, 13):
+        src = (
+            "obs" if m in observed_oni else "seas5" if m in forecast_oni else "persist"
+        )
+        oni_val = oni_3m.get(m, np.nan)
+        print(
+            f"  month {m:2d}: {phase_schedule[m]:3s}  "
+            f"(ONI={oni_val:+.2f}, source={src})"
+        )
+
+    return phase_schedule
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Download and prepare SEAS5 forecast fields for SIENA-IH-STORM"
@@ -542,5 +825,44 @@ if __name__ == "__main__":
         default=9999,
         help="Synthetic year label for storage (use 10000+member for multi-member runs)",
     )
+    parser.add_argument(
+        "--generate-config",
+        action="store_true",
+        help="Also generate forecast_config.json with ONI-derived phases",
+    )
+    parser.add_argument(
+        "--active-months",
+        type=int,
+        nargs="+",
+        default=[6, 7, 8, 9, 10, 11],
+        help="Active season months for the target basin",
+    )
+    parser.add_argument(
+        "--oni-threshold",
+        type=float,
+        default=0.5,
+        help="ONI threshold for EN/LN classification",
+    )
     args = parser.parse_args()
+
+    # Step 1: Download and process forecast fields
     process_forecast(args.init_date, args.lead_months, args.member, args.env_year)
+
+    # Step 2 (optional): Generate config with auto-derived phase schedule
+    if args.generate_config:
+        phase_schedule = build_phase_schedule_from_seas5(
+            args.init_date,
+            args.lead_months,
+            args.member,
+            threshold=args.oni_threshold,
+        )
+        os.makedirs("forecast_configs", exist_ok=True)
+        generate_forecast_config(
+            init_date=args.init_date,
+            lead_months=args.lead_months,
+            member=args.member,
+            env_year=args.env_year,
+            active_months=args.active_months,
+            phase_schedule=phase_schedule,
+            out_path=f"forecast_configs/config_m{args.member}.json",
+        )
