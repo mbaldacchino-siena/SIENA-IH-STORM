@@ -51,13 +51,13 @@ If your aim is to build a forward-looking catalog instead (from C3S), you should
 2. `Make_land_ocean_mask.py` (Note: This script uses Python 2.7 and Basemap. It stores a `.txt` file that can be loaded in Python 3.x. These files are now added to the repository, e.g., `Land_ocean_mask_{basin}.txt`. This step is optional as these files are already in the repository and were not modified from Bloemendaal et al. 2020.)
 3. `MASTER_preprocessing.py`
 4. `Download-Process SEAS5 and generate config` for m in $(seq 0 50); do
-    python MASTER_forecast_fields.py \
+    python -m MASTER.MASTER_forecast_fields.py \
         --init-date 2026-04-01 --lead-months 6 \
         --member $m --env-year $((10000 + m)) \
         --generate-config --active-months 6 7 8 9 10 11
 done
 5. `MASTER_storm_parallel.py` [Run with extra parameters : for m in $(seq 0 50); do
-    python MASTER_storm_parallel.py \
+    python -m MASTER.MASTER_storm_parallel.py \
         --forecast forecast_configs/config_m${m}.json \
         --basins NA \
         --years 1000 --loop 10 --workers 30]
