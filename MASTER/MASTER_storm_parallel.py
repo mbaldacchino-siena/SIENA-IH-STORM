@@ -28,7 +28,7 @@ dir_path = os.path.dirname(os.path.realpath(__file__))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
 
-def _run_single_job(job, years_per_loop, use_yearly=True):
+def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=None):
     """
     Worker function: generates one loop of synthetic storms.
     Called in a separate process -- must import everything locally
@@ -44,7 +44,7 @@ def _run_single_job(job, years_per_loop, use_yearly=True):
     random.seed(seed_base)
 
     # ---- Local imports (required for multiprocessing) ----
-    from CODE.SELECT_BASIN import Basins_WMO
+    from CODE.SELECT_BASIN import Basins_WMO, Basins_WMO_forecast
     from CODE.SAMPLE_STARTING_POINT import Startingpoint
     from CODE.SAMPLE_TC_MOVEMENT import TC_movement
     from CODE.SAMPLE_TC_PRESSURE import TC_pressure
@@ -68,6 +68,34 @@ def _run_single_job(job, years_per_loop, use_yearly=True):
     _basin_idx = _BASIN_NAMES.index(basin)
     active_months = _months_all[_basin_idx]
 
+    # ---- Forecast mode setup ----
+    forecast_cfg = None
+    month_phases = None
+    poisson_phase_rate = None
+    genesis_months_phase = None
+
+    if forecast_config_path is not None:
+        from FORECAST.forecast_config import (
+            load_forecast_config,
+            build_forecast_env_years,
+            get_month_phases,
+        )
+
+        forecast_cfg = load_forecast_config(forecast_config_path)
+        month_phases = get_month_phases(forecast_cfg, active_months)
+
+        # Load phase-specific genesis parameters
+        poisson_phase_rate = np.load(
+            os.path.join(__location__, "POISSON_GENESIS_PARAMETERS_PHASE.npy"),
+            allow_pickle=True,
+        ).item()
+        genesis_months_phase = np.load(
+            os.path.join(__location__, "GENESIS_MONTHS_PHASE.npy"),
+            allow_pickle=True,
+        ).item()
+
+
+
     pid = os.getpid()
     print(
         f"[PID {pid}] Starting: basin={basin} phase={phase} loop={loop_idx} ({years_per_loop} years)"
@@ -77,14 +105,36 @@ def _run_single_job(job, years_per_loop, use_yearly=True):
 
     TC_data = []
     for year in range(years_per_loop):
-        storms_per_year, genesis_month, lat0, lat1, lon0, lon1 = Basins_WMO(
-            basin, phase=phase
-        )
 
-        # ── Draw historical years per month for this simulated year ──
-        env_years = None
-        if env_pool is not None:
-            env_years = draw_env_years_for_season(env_pool, phase, active_months)
+        if forecast_cfg is not None:
+            # ── FORECAST MODE ──
+            # Blended genesis: single Poisson + multinomial across months
+            storms_per_year, genesis_month, lat0, lat1, lon0, lon1 = (
+                Basins_WMO_forecast(
+                    basin,
+                    month_phases,
+                    poisson_phase_rate=poisson_phase_rate,
+                    genesis_months_phase=genesis_months_phase,
+                    active_months=active_months,
+                )
+            )
+
+            # Build env_years from forecast config
+            # "historical" months get a fresh resample each synthetic year
+            env_years = build_forecast_env_years(
+                forecast_cfg, env_pool or {}, active_months
+            )
+
+        else:
+            # ── ORIGINAL MODE ──
+            storms_per_year, genesis_month, lat0, lat1, lon0, lon1 = Basins_WMO(
+                basin, phase=phase
+            )
+
+            # ── Draw historical years per month for this simulated year ──
+            env_years = None
+            if env_pool is not None:
+                env_years = draw_env_years_for_season(env_pool, phase, active_months)
 
         if storms_per_year > 0:
             lon_genesis_list, lat_genesis_list = Startingpoint(
@@ -112,7 +162,15 @@ def _run_single_job(job, years_per_loop, use_yearly=True):
             )
 
     TC_data = np.array(TC_data)
-    out = f"STORM_DATA_IBTRACS_{basin}_{phase}_{years_per_loop}_YEARS_{loop_idx}.txt"
+    # ── Output filename includes forecast tag ──
+    if forecast_cfg is not None:
+        member = forecast_cfg.get("ensemble_member", 0)
+        out = (
+            f"STORM_DATA_IBTRACS_{basin}_FORECAST_m{member}"
+            f"_{years_per_loop}_YEARS_{loop_idx}.txt"
+        )
+    else:
+        out = f"STORM_DATA_IBTRACS_{basin}_{phase}_{years_per_loop}_YEARS_{loop_idx}.txt"
     outpath = os.path.join(__location__, out)
     if len(TC_data) > 0:
         np.savetxt(outpath, TC_data, fmt="%5s", delimiter=",")
@@ -162,10 +220,25 @@ def main():
         action="store_true",
         help="Disable year resampling (use phase-mean fields)",
     )
+
+    parser.add_argument(
+        "--forecast",
+        type=str,
+        default=None,
+        help="Path to forecast_config.json. Enables seasonal forecast mode. "
+        "When set, --phase is ignored (phases come from the config).",
+    )
+
     args = parser.parse_args()
 
-    # Resolve phases
-    if args.phase == "ALL":
+
+    # ── Forecast mode: override phase handling ──
+    if args.forecast is not None:
+        # In forecast mode, phase is not used for genesis — month_phases
+        # from the config drive everything. We still run ONE phase label
+        # for output naming. Use "FCST" as a pseudo-phase.
+        phases = ["FCST"]
+    elif args.phase == "ALL":
         phases = ["LN", "NEU", "EN"]
     else:
         phases = [args.phase]
@@ -197,7 +270,10 @@ def main():
 
     # ---- Run in parallel ----
     worker_fn = partial(
-        _run_single_job, years_per_loop=args.years, use_yearly=not args.no_yearly
+        _run_single_job,
+        years_per_loop=args.years,
+        use_yearly=not args.no_yearly,
+        forecast_config_path=args.forecast,
     )
 
     if n_workers == 1:
