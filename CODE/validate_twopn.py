@@ -16,9 +16,8 @@ from scipy.stats import kstest, skew, norm
 from scipy.special import erf
 from scipy.optimize import least_squares
 
-dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
-
+__location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
+dir_path = __location__
 
 def _twopn_cdf(x, mu, std_neg, std_pos):
     """CDF of two-piece normal distribution."""

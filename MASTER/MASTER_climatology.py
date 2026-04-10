@@ -15,8 +15,9 @@ import CODE.import_data as import_data
 import CODE.climatology as climatology
 
 
-dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
+__location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
+dir_path = __location__
+
 
 (
     period,

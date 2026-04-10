@@ -18,9 +18,8 @@ import numpy as np
 import os
 import sys
 
-dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
-
+__location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
+dir_path = __location__
 # Module-level cache: load RMAX_PRESSURE.npy once
 _RMAX_CACHE = None
 

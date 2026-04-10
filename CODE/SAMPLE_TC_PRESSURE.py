@@ -31,8 +31,9 @@ import math
 import sys
 import os
 
-dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
+__location__ = os.path.realpath(os.getcwd())
+dir_path = __location__
+
 import random
 from CODE.siena_utils import (
     normalize_phase,

@@ -8,9 +8,8 @@ import sys
 from CODE.SELECT_BASIN import Basins_WMO
 from CODE.siena_utils import normalize_phase
 
-dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
-
+__location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
+dir_path = __location__
 
 def Check_EP_formation(lat, lon):
     # Block EP genesis in the NA-exclusive zone (lon>276 AND lat>20)

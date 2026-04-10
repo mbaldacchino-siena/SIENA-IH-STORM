@@ -24,9 +24,9 @@ import os
 import sys
 
 pd.options.mode.chained_assignment = None  # default='warn'
-dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
+__location__ = os.path.realpath(os.getcwd())
+dir_path = __location__
 
 def monthly_mean_pressure_STORM(data):
     """

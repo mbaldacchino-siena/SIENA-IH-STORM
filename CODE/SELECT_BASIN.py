@@ -9,10 +9,9 @@ import os
 import sys
 from CODE.siena_utils import normalize_phase, phase_code
 
-dir_path=os.path.dirname(os.path.realpath(sys.argv[0]))
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
-
+__location__ = os.path.realpath(os.getcwd())
+dir_path = __location__
 def Genesis_month(idx, storms, phase=None):
     phase = normalize_phase(phase)
     if phase is not None and os.path.exists(os.path.join(__location__, 'GENESIS_MONTHS_PHASE.npy')):

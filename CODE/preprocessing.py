@@ -19,8 +19,9 @@ from scipy import stats
 import os
 import sys
 
-dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
+
+__location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
+dir_path = __location__
 
 # Basin indices:
 # 0 = EP = Eastern Pacific

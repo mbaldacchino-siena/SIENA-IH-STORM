@@ -21,9 +21,8 @@ from CODE.siena_utils import (
 import os
 import sys
 
-dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
-
+__location__ = os.path.realpath(os.getcwd())
+dir_path = __location__
 
 _BASIN_BOUNDS = {
     "EP": (5, 60, 180, 285),

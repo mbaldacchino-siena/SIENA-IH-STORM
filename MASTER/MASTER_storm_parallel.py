@@ -24,9 +24,9 @@ import time
 import multiprocessing as mp
 from functools import partial
 
-dir_path = os.path.dirname(os.path.realpath(__file__))
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
+__location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
+dir_path = __location__
 
 def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=None):
     """
