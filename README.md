@@ -17,18 +17,11 @@ To get started, you should first create a conda environment using the provided `
 1. **Create the environment:**
 
 ```bash
-   micromamba create -y -n cat -c conda-forge python=3.12 \
-  numpy pandas scipy scikit-learn matplotlib netcdf4 h5netcdf h5py \
-  xarray cdsapi cartopy geopandas fiona gdal pyproj shapely rtree openpyxl jupyter pip
+   micromamba env create -f STORM_env.yml
+   micromamba activate cat
 ```
 
-2. **Activate the environment:**
-   ```bash
-   micromamba activate cat
-   python3 -m pip install tcpypi
-   ```
-
-3. **Add your CDS API information:**
+2. **Add your CDS API information:**
  ```bash  
 cat > ~/.cdsapirc <<'EOF'
 url: https://cds.climate.copernicus.eu/api
@@ -39,13 +32,54 @@ EOF
 
 ## Running the Scripts
 
-Once you have activated the environment, you should run the scripts in the following order:
+### Classic Mode
+
+Once you have activated the environment,if you plan to generate a synthetic catalog from historical data, you should run the scripts in the following order:
 
 1. `MASTER_climatology.py`
 2. `Make_land_ocean_mask.py` (Note: This script uses Python 2.7 and Basemap. It stores a `.txt` file that can be loaded in Python 3.x. These files are now added to the repository, e.g., `Land_ocean_mask_{basin}.txt`. This step is optional as these files are already in the repository and were not modified from Bloemendaal et al. 2020.)
 3. `MASTER_preprocessing.py`
 4. `MASTER_storm_parallel.py` [Run with extra parameters : python MASTER_storm_parallel.py --phase ALL --basins NA WP --years 1000 --loop 10 --workers 5]
 5. `MASTER_storm_parameters.py` (This script extracts additional parameters from the tracks) - NOT UPDATED FROM ODERIZ (2025) YET ! 
+
+
+### Forecast Mode
+
+If your aim is to build a forward-looking catalog instead (from C3S), you should run:
+
+1. `MASTER_climatology.py`
+2. `Make_land_ocean_mask.py` (Note: This script uses Python 2.7 and Basemap. It stores a `.txt` file that can be loaded in Python 3.x. These files are now added to the repository, e.g., `Land_ocean_mask_{basin}.txt`. This step is optional as these files are already in the repository and were not modified from Bloemendaal et al. 2020.)
+3. `MASTER_preprocessing.py`
+4. `Download-Process SEAS5` for m in $(seq 0 50); do
+    python MASTER_forecast_fields.py \
+        --init-date 2026-04-01 \
+        --lead-months 6 \
+        --member $m \
+        --env-year $((10000 + m))
+done
+5. `Generate forecast configs`  [from MASTER_forecast_fields import generate_forecast_config 
+#Phase schedule from ENSO forecast (e.g., IRI plume)
+phase_schedule = {
+    1: "LN", 2: "LN", 3: "LN", 4: "NEU",
+    5: "NEU", 6: "NEU", 7: "EN", 8: "EN",
+    9: "EN", 10: "EN", 11: "EN", 12: "EN",
+}
+
+for m in range(51):
+    generate_forecast_config(
+        init_date="2026-04-01",
+        lead_months=6,
+        member=m,
+        env_year=10000 + m,
+        active_months=[6, 7, 8, 9, 10, 11],
+        phase_schedule=phase_schedule,
+        out_path=f"forecast_configs/config_m{m}.json",
+    )]
+6. `MASTER_storm_parallel.py` [Run with extra parameters : for m in $(seq 0 50); do
+    python MASTER_storm_parallel.py \
+        --forecast forecast_configs/config_m${m}.json \
+        --basins NA \
+        --years 1000 --loop 10 --workers 30]
 
 
 ![IH-STORM flowchart](IH-STORM.drawio.png)
