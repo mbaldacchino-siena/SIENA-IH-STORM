@@ -394,7 +394,7 @@ def TC_variables(
         print("Files do not exist in " + str(__location__) + ", please check directory")
         return
 
-    from siena_utils import build_phase_lookup, nearest_env_value, verify_phase_rates
+    from CODE.siena_utils import build_phase_lookup, nearest_env_value, verify_phase_rates
 
     phase_lookup = build_phase_lookup(oni_table)
 

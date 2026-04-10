@@ -423,3 +423,125 @@ def select_lambda_cv(
                 best_lambda = lam
 
     return best_lambda, best_mse, all_results
+
+
+
+# =========================================================================
+# Forecast mode: blended-rate genesis with month-level ENSO phases
+# =========================================================================
+
+
+def compute_monthly_genesis_weights(genesis_months_phase, idx, active_months):
+    """
+    Compute per-month genesis fraction w_m for each phase, from the
+    historical genesis month lists.
+
+    Parameters
+    ----------
+    genesis_months_phase : dict, {basin_idx: {"LN": [months...], "NEU": [...], "EN": [...]}}
+        As stored in GENESIS_MONTHS_PHASE.npy
+    idx : int, basin index
+    active_months : list of int
+
+    Returns
+    -------
+    dict : {phase_str: {month: float}}
+        Normalised weights (sum to 1 over active_months for each phase).
+        Falls back to uniform if a phase has no data for a month.
+    """
+    weights = {}
+    for phase in ["LN", "NEU", "EN"]:
+        month_list = genesis_months_phase[idx].get(phase, [])
+        if len(month_list) == 0:
+            # No data: uniform over active months
+            w = {m: 1.0 / len(active_months) for m in active_months}
+        else:
+            counts = {m: 0 for m in active_months}
+            for m in month_list:
+                if m in counts:
+                    counts[m] += 1
+            total = sum(counts.values())
+            if total == 0:
+                w = {m: 1.0 / len(active_months) for m in active_months}
+            else:
+                w = {m: c / total for m, c in counts.items()}
+        weights[phase] = w
+    return weights
+
+
+def blended_genesis(
+    poisson_phase_rate,
+    genesis_months_phase,
+    idx,
+    active_months,
+    month_phases,
+):
+    """
+    Draw storm count and genesis months for a synthetic year with
+    month-level ENSO phases (forecast mode).
+
+    Algorithm:
+      1. Compute blended annual rate:
+         λ_blend = Σ_m  λ_{ph(m)} × w_{m|ph(m)}
+         where w_{m|ph} is the historical fraction of phase-ph storms
+         born in month m.
+
+      2. Draw total storms from Poisson(λ_blend).
+
+      3. Distribute storms across months via multinomial with
+         probabilities p_m = λ_{ph(m)} × w_{m|ph(m)} / λ_blend.
+         The multinomial naturally anti-correlates months given a fixed
+         total — no artificial month independence.
+
+    Parameters
+    ----------
+    poisson_phase_rate : dict, {basin_idx: {phase_code: float}}
+        Annual Poisson rate per phase, from POISSON_GENESIS_PARAMETERS_PHASE.npy
+    genesis_months_phase : dict, from GENESIS_MONTHS_PHASE.npy
+    idx : int, basin index
+    active_months : list of int, e.g. [6,7,8,9,10,11]
+    month_phases : dict, {month_int: "LN"|"NEU"|"EN"}
+        The ENSO phase assigned to each month in this forecast year.
+
+    Returns
+    -------
+    storms_per_year : int
+    genesis_month_list : list of int (one entry per storm)
+    """
+    from siena_utils import PHASE_TO_CODE
+
+    # Step 0: historical monthly weights per phase
+    monthly_weights = compute_monthly_genesis_weights(
+        genesis_months_phase, idx, active_months
+    )
+
+    # Step 1: blended rate
+    lambda_blend = 0.0
+    monthly_contributions = {}  # {month: λ_{ph(m)} * w_{m|ph(m)}}
+    for m in active_months:
+        ph_str = month_phases.get(m, "NEU")
+        ph_code = PHASE_TO_CODE[ph_str]
+        lam_ph = poisson_phase_rate[idx].get(ph_code, 0)
+        w_m = monthly_weights[ph_str].get(m, 0)
+        contrib = lam_ph * w_m
+        monthly_contributions[m] = contrib
+        lambda_blend += contrib
+
+    if lambda_blend <= 0:
+        return 0, []
+
+    # Step 2: draw total count
+    storms_per_year = int(np.random.poisson(lambda_blend))
+    if storms_per_year == 0:
+        return 0, []
+
+    # Step 3: multinomial distribution across months
+    probs = np.array([monthly_contributions[m] for m in active_months])
+    probs = probs / probs.sum()  # normalise (should already sum to 1)
+    counts = np.random.multinomial(storms_per_year, probs)
+
+    genesis_month_list = []
+    for m, c in zip(active_months, counts):
+        genesis_month_list.extend([m] * c)
+
+    return storms_per_year, genesis_month_list

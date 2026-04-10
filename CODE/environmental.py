@@ -18,8 +18,8 @@ import pandas as pd
 from scipy.stats import norm
 from scipy.optimize import curve_fit, least_squares
 import math
-import preprocessing
-from siena_utils import solve_ridge
+import CODE.preprocessing as preprocessing
+from CODE.siena_utils import solve_ridge
 import os
 import sys
 
@@ -854,7 +854,7 @@ def _select_lambda_pressure_cv(df_basin, lambda_grid=None, min_fold_size=20):
     # Stage 2: Linear CV on residual ~ c_en*I_EN + c_ln*I_LN
     X_enso = np.column_stack([i_en, i_ln])
     # After intercept prepend: col 0=intercept, 1=I_EN, 2=I_LN
-    from siena_utils import select_lambda_cv
+    from CODE.siena_utils import select_lambda_cv
 
     best_lambda, best_mse, cv_results = select_lambda_cv(
         X_enso,

@@ -5,8 +5,8 @@ import numpy as np
 import random
 import os
 import sys
-from SELECT_BASIN import Basins_WMO
-from siena_utils import normalize_phase
+from CODE.SELECT_BASIN import Basins_WMO
+from CODE.siena_utils import normalize_phase
 
 dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))

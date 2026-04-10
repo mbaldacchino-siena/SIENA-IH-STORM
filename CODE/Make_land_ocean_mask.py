@@ -15,7 +15,7 @@ Copyright (C) 2020 Nadia Bloemendaal. All versions released under the GNU Genera
 
 from basemap import maskoceans
 import numpy as np
-import preprocessing
+import CODE.preprocessing as preprocessing
 import os
 import sys
 dir_path=os.path.dirname(os.path.realpath(sys.argv[0]))

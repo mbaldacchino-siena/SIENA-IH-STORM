@@ -16,7 +16,7 @@ import os.path as op
 import cdsapi
 import pandas as pd
 import numpy as np
-import potential_intensity
+import CODE.potential_intensity as potential_intensity
 
 from pathlib import Path
 
@@ -629,7 +629,7 @@ def save_yearly_env_fields(climate_df, period):
     climate_df : DataFrame with [year, month, climate_index, phase]
     period : (start_year, end_year)
     """
-    from siena_utils import save_yearly_field, save_env_pool, _env_yearly_dir
+    from CODE.siena_utils import save_yearly_field, save_env_pool, _env_yearly_dir
 
     local_path = os.getcwd()
     out_dir = _env_yearly_dir(local_path)

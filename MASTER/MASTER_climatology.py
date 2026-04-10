@@ -11,8 +11,8 @@ Copyright (C) 2026 Mathys Baldacchino.
 
 import os
 import sys
-import import_data
-import climatology
+import CODE.import_data as import_data
+import CODE.climatology as climatology
 
 
 dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))

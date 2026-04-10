@@ -7,7 +7,7 @@ import numpy as np
 import random
 import os
 import sys
-from siena_utils import normalize_phase, phase_code
+from CODE.siena_utils import normalize_phase, phase_code
 
 dir_path=os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
@@ -58,3 +58,57 @@ def Basins_WMO(basin, phase=None):
     if idx==5:
         lat0,lat1,lon0,lon1=5,60,100,180
     return s,month,lat0,lat1,lon0,lon1
+
+
+
+# =========================================================================
+# Forecast mode: Adjusted monthly-based WMO
+# =========================================================================
+
+
+def Basins_WMO_forecast(
+    basin,
+    month_phases,
+    poisson_phase_rate=None,
+    genesis_months_phase=None,
+    active_months=None,
+):
+    """
+    Forecast-mode genesis: blended Poisson + multinomial month distribution.
+
+    Parameters
+    ----------
+    basin : str
+    month_phases : dict {month: "LN"|"NEU"|"EN"}
+    poisson_phase_rate : dict from POISSON_GENESIS_PARAMETERS_PHASE.npy
+    genesis_months_phase : dict from GENESIS_MONTHS_PHASE.npy
+    active_months : list of int
+
+    Returns
+    -------
+    Same as Basins_WMO: (storms, month_list, lat0, lat1, lon0, lon1)
+    """
+    from siena_utils import blended_genesis
+
+    basins = ["EP", "NA", "NI", "SI", "SP", "WP"]
+    idx = basins.index(basin)
+
+    storms, month_list = blended_genesis(
+        poisson_phase_rate,
+        genesis_months_phase,
+        idx,
+        active_months,
+        month_phases,
+    )
+
+    # Basin bounds (same as Basins_WMO)
+    bounds = {
+        0: (5, 60, 180, 285),
+        1: (5, 60, 255, 360),
+        2: (5, 60, 30, 100),
+        3: (-60, -5, 10, 135),
+        4: (-60, -5, 135, 240),
+        5: (5, 60, 100, 180),
+    }
+    lat0, lat1, lon0, lon1 = bounds[idx]
+    return storms, month_list, lat0, lat1, lon0, lon1

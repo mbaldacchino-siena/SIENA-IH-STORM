@@ -36,8 +36,8 @@ def validate_residuals():
     For each basin × month × spatial cell, compute the pressure model
     residuals and compare the two-piece normal vs symmetric normal fit.
     """
-    import preprocessing
-    import environmental
+    import CODE.preprocessing as preprocessing
+    import CODE.environmental as environmental
 
     pres_variables = np.load(
         os.path.join(__location__, "TC_PRESSURE_VARIABLES.npy"), allow_pickle=True

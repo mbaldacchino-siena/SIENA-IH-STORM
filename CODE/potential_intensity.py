@@ -19,7 +19,7 @@ Copyright (C) 2026 Mathys Baldacchino
 import os
 import numpy as np
 import warnings
-import climatology
+import CODE.climatology as climatology
 import xarray as xr
 from scipy.ndimage import zoom
 

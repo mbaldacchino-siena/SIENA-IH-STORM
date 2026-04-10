@@ -23,9 +23,9 @@ Performance notes (SIENA):
 """
 
 import numpy as np
-from SELECT_BASIN import Basins_WMO
+from CODE.SELECT_BASIN import Basins_WMO
 from math import radians, cos, sin, asin, sqrt
-from SAMPLE_RMAX import Add_Rmax
+from CODE.SAMPLE_RMAX import Add_Rmax
 from scipy.stats import truncnorm
 import math
 import sys
@@ -34,7 +34,7 @@ import os
 dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 import random
-from siena_utils import (
+from CODE.siena_utils import (
     normalize_phase,
     phase_code,
     load_monthly_field,

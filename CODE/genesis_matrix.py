@@ -14,7 +14,7 @@ from shapely.prepared import prep
 import pandas as pd
 from scipy.interpolate import griddata
 import matplotlib.pyplot as plt
-from siena_utils import load_monthly_field
+from CODE.siena_utils import load_monthly_field
 from scipy.ndimage import zoom
 
 

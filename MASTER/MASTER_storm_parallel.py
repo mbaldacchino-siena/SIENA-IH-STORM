@@ -44,11 +44,11 @@ def _run_single_job(job, years_per_loop, use_yearly=True):
     random.seed(seed_base)
 
     # ---- Local imports (required for multiprocessing) ----
-    from SELECT_BASIN import Basins_WMO
-    from SAMPLE_STARTING_POINT import Startingpoint
-    from SAMPLE_TC_MOVEMENT import TC_movement
-    from SAMPLE_TC_PRESSURE import TC_pressure
-    from siena_utils import load_env_pool, draw_env_years_for_season
+    from CODE.SELECT_BASIN import Basins_WMO
+    from CODE.SAMPLE_STARTING_POINT import Startingpoint
+    from CODE.SAMPLE_TC_MOVEMENT import TC_movement
+    from CODE.SAMPLE_TC_PRESSURE import TC_pressure
+    from CODE.siena_utils import load_env_pool, draw_env_years_for_season
 
     # ---- Load year pool (tiny JSON, fast) ----
     env_pool = None
@@ -61,7 +61,7 @@ def _run_single_job(job, years_per_loop, use_yearly=True):
     # Must NOT come from Basins_WMO (which draws a random Poisson count and
     # random genesis months — incomplete and non-reproducible).
     # Read from input.dat to stay in sync with preprocessing.
-    import import_data
+    import CODE.import_data as import_data
     _BASIN_NAMES = ["EP", "NA", "NI", "SI", "SP", "WP"]
     _input = import_data.input_data("input.dat")
     _months_all = _input[4]  # months is the 5th return value

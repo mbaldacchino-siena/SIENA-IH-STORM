@@ -42,7 +42,7 @@ MONTHS_DEFAULT = [
 def load_input_months():
     """Try to read months from input.dat, fall back to defaults."""
     try:
-        import import_data
+        import CODE.import_data as import_data
 
         _, _, _, _, months, *_ = import_data.input_data("input.dat")
         return months
@@ -170,7 +170,7 @@ def diagnose_mpi_consistency():
     runtime than during training → storms under-intensify.
     If ratio << 1 (say < 0.7), the brake is WEAKER → storms over-intensify.
     """
-    import preprocessing
+    import CODE.preprocessing as preprocessing
 
     coef_path = os.path.join(__location__, "COEFFICIENTS_JM_PRESSURE.npy")
     if not os.path.exists(coef_path):

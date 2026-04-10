@@ -12,8 +12,8 @@ SIENA VWS update:
 """
 
 import numpy as np
-from SELECT_BASIN import Basins_WMO
-from siena_utils import (
+from CODE.SELECT_BASIN import Basins_WMO
+from CODE.siena_utils import (
     normalize_phase,
     load_monthly_field,
     load_field_with_year_fallback,

@@ -13,13 +13,13 @@ import sys
 import xarray as xr
 import numpy as np
 import pandas as pd
-import preprocessing
-import coefficients
-import environmental
-import genesis_matrix
-import import_data
-from siena_utils import load_climate_index_table, count_phase_months
-from validate_twopn import validate_residuals
+import CODE.preprocessing as preprocessing
+import CODE.coefficients as coefficients
+import CODE.environmental as environmental
+import CODE.genesis_matrix as genesis_matrix
+import CODE.import_data as import_data
+from CODE.siena_utils import load_climate_index_table, count_phase_months
+from CODE.validate_twopn import validate_residuals
 
 dir_path = os.path.dirname(os.path.realpath(sys.argv[0]))
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
