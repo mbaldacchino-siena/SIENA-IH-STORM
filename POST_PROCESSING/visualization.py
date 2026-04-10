@@ -52,7 +52,7 @@ except ImportError:
     )
 
 # Import evaluation.py helpers
-from evaluation import (
+from POST_PROCESSING.utils.evaluation import (
     load_catalog,
     BASIN_BOUNDS as _EVAL_BOUNDS,
     BASIN_ID_MAP,
