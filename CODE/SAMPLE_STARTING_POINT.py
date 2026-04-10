@@ -50,7 +50,7 @@ def _build_weighted_index(grid_copy, round_coeff=4):
     return weighted_list_index, grid_copy
 
 
-def Startingpoint(no_storms, monthlist, basin, phase=None):
+def Startingpoint(no_storms, monthlist, basin, phase=None, month_phases=None):
     phase = normalize_phase(phase)
     basins = ["EP", "NA", "NI", "SI", "SP", "WP"]
     basin_name = dict(zip(basins, [0, 1, 2, 3, 4, 5]))
@@ -63,15 +63,20 @@ def Startingpoint(no_storms, monthlist, basin, phase=None):
     )
 
     for month in monthlist:
+
+        effective_phase = phase
+        if month_phases is not None and month in month_phases:
+            effective_phase = normalize_phase(month_phases[month])
+
         # ---- FIX: Try phase-specific grid first, fall back to pooled ----
         grid_path_phase = None
         grid_path_pooled = os.path.join(
             dir_path, f"GRID_GENESIS_MATRIX_{idx}_{month}.txt"
         )
 
-        if phase is not None:
+        if effective_phase is not None:  # ← was: if phase is not None
             candidate = os.path.join(
-                dir_path, f"GRID_GENESIS_MATRIX_{idx}_{month}_{phase}.txt"
+                dir_path, f"GRID_GENESIS_MATRIX_{idx}_{month}_{effective_phase}.txt"
             )
             if os.path.exists(candidate):
                 grid_path_phase = candidate
