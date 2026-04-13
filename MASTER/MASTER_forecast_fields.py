@@ -41,14 +41,14 @@ except ImportError:
     cdsapi = None
 
 try:
-    from potential_intensity import compute_pi_field
+    from CODE.potential_intensity import compute_pi_field
 
     HAS_PI = True
 except ImportError:
     HAS_PI = False
 
 try:
-    from potential_intensity import (
+    from CODE.potential_intensity import (
         compute_pi_field_tcpyPI,
         compute_pi_field_simplified,
         _nanfill_nearest,
@@ -59,9 +59,9 @@ try:
 except ImportError:
     HAS_TCPYPI = False
 
-from siena_utils import save_yearly_field, _env_yearly_dir
+from CODE.siena_utils import save_yearly_field, _env_yearly_dir
 
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
+__location__ = os.path.realpath(os.getcwd())
 
 
 # =========================================================================
@@ -107,42 +107,17 @@ def download_seas5(init_date, lead_months, member, out_dir):
     #
     # SEAS5 standard pressure levels (hPa):
     SEAS5_LEVELS = [
-        "1",
-        "2",
-        "3",
-        "5",
-        "7",
         "10",
-        "20",
         "30",
         "50",
-        "70",
         "100",
-        "125",
-        "150",
-        "175",
         "200",
-        "225",
-        "250",
         "300",
-        "350",
         "400",
-        "450",
         "500",
-        "550",
-        "600",
-        "650",
         "700",
-        "750",
-        "775",
-        "800",
-        "825",
         "850",
-        "875",
-        "900",
         "925",
-        "950",
-        "975",
         "1000",
     ]
 
@@ -719,7 +694,7 @@ def build_phase_schedule_from_seas5(
     init_month = int(init_date[5:7])
 
     # ── 1. Observed monthly ONI from climate_index.csv ──
-    from siena_utils import load_climate_index_table
+    from CODE.siena_utils import load_climate_index_table
 
     oni_df = load_climate_index_table(climate_index_path)
 
