@@ -58,7 +58,7 @@ def Startingpoint(no_storms, monthlist, basin, phase=None, month_phases=None):
     lat_coordinates = []
     s, monthdummy, lat0, lat1, lon0, lon1 = Basins_WMO(basin, phase=phase)
     land_mask = np.loadtxt(
-        os.path.join(dir_path, "Land_ocean_mask_" + str(basin) + ".txt")
+        os.path.join(dir_path, "Land_ocean_masks/Land_ocean_mask_" + str(basin) + ".txt")
     )
 
     for month in monthlist:

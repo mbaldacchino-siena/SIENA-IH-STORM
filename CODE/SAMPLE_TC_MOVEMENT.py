@@ -127,7 +127,9 @@ def TC_movement(
         encoding="latin1",
     ).item()
     land_mask = np.loadtxt(
-        os.path.join(__location__, "Land_ocean_mask_" + str(basin) + ".txt")
+        os.path.join(
+            __location__, "Land_ocean_masks/Land_ocean_mask_" + str(basin) + ".txt"
+        )
     )
     constants = constants_all[idx]
     lat0, lat1, lon0, lon1 = _BASIN_BOUNDS[basin]
