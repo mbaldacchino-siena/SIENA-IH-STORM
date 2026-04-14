@@ -27,6 +27,7 @@ from CODE.SELECT_BASIN import Basins_WMO
 from math import radians, cos, sin, asin, sqrt
 from CODE.SAMPLE_RMAX import Add_Rmax
 from scipy.stats import truncnorm
+from scipy.spatial import cKDTree
 import math
 import sys
 import os
@@ -46,20 +47,67 @@ from CODE.siena_utils import (
 # MODULE-LEVEL CACHES — loaded once, reused across all calls
 # ==========================================================================
 
-# Cache 1: Coastal basemap for distance_from_coast
-# Original code loaded this 18MB file on EVERY non-landfall timestep
-_COASTAL_CACHE = None
+
+from scipy.spatial import cKDTree
+
+_COASTAL_TREE = None
 
 
-def _get_coastal_data():
-    """Load coastal basemap once, return cached (lons, lats) arrays."""
-    global _COASTAL_CACHE
-    if _COASTAL_CACHE is None:
+def _get_coastal_tree():
+    """Load coastal points once and build KD-tree once per process."""
+    global _COASTAL_TREE
+    if _COASTAL_TREE is None:
         fpath = os.path.join(dir_path, "coastal_basemap_data.npy")
-        D = np.load(fpath, encoding="latin1", allow_pickle=True).tolist()
-        _COASTAL_CACHE = (D["lons"], D["lats"])
-    return _COASTAL_CACHE
+        D = np.load(fpath, allow_pickle=True, encoding="latin1").tolist()
+        coords = np.column_stack(
+            (
+                np.asarray(D["lons"], dtype=np.float64),
+                np.asarray(D["lats"], dtype=np.float64),
+            )
+        )
+        _COASTAL_TREE = cKDTree(coords)
+    return _COASTAL_TREE
 
+
+def distance_from_coast(lon, lat, degree_in_km=111.12):
+    """
+    Distance to nearest coastal point using KD-tree.
+    Same metric as before: nearest point in lon/lat degree space,
+    then scaled by degree_in_km.
+    """
+    if lon > 180.0:
+        lon -= 360.0
+    tree = _get_coastal_tree()
+    dist_deg, _ = tree.query((lon, lat), k=1)
+    return float(dist_deg * degree_in_km)
+
+
+def distance_from_coast_batch(lons, lats, degree_in_km=111.12):
+    """
+    Vectorized nearest-coast distance for many points at once.
+
+    Parameters
+    ----------
+    lons, lats : array-like of same length
+        Longitude and latitude arrays.
+    degree_in_km : float
+        Conversion factor from degree distance to km.
+
+    Returns
+    -------
+    np.ndarray
+        Distance-to-coast in km for each point.
+    """
+    lons = np.asarray(lons, dtype=np.float64).copy()
+    lats = np.asarray(lats, dtype=np.float64)
+
+    # Keep same longitude convention as scalar version
+    lons[lons > 180.0] -= 360.0
+
+    pts = np.column_stack((lons, lats))
+    tree = _get_coastal_tree()
+    dist_deg, _ = tree.query(pts, k=1)
+    return dist_deg * degree_in_km
 
 # Cache 2: Monthly environmental fields keyed by (stem, month, phase_str, env_year)
 # Original code called np.loadtxt (text parsing of 721×1440 grids) per storm.
@@ -314,20 +362,6 @@ def decay_after_landfall(lat_landfall, lon_landfall, latlijst, lonlijst, p, coef
 
     return pressure_decay, wind_decay
 
-
-def distance_from_coast(lon, lat, degree_in_km=111.12):
-    """
-    Calculate the distance from coast using CACHED coastal data.
-    Original loaded the 18MB file on every call — now loads once.
-    """
-    if lon > 180:
-        lon = lon - 360.0
-    lons, lats = _get_coastal_data()
-    dists = np.sqrt((lons - lon) ** 2 + (lats - lat) ** 2)
-    mindist = np.min(dists) * degree_in_km
-    return mindist
-
-
 def add_parameters_to_TC_data(
     pressure_list,
     wind_list,
@@ -367,27 +401,58 @@ def add_parameters_to_TC_data(
     rmax_list = Add_Rmax(pressure_list)
     x = min(len(landfallfull), len(lijst))
 
-
     _env_year_val = int(env_year) if env_year is not None else -1
 
-    for l in range(0, x):
-        if landfallfull[l] == 1.0:
-            dist = 0
-        else:
-            # Uses cached coastal data (no file I/O)
-            dist = distance_from_coast(lonfull[l], latfull[l])
+    # Convert once
+    lat_arr = np.asarray(latfull[:x], dtype=np.float64)
+    lon_arr = np.asarray(lonfull[:x], dtype=np.float64)
+    land_arr = np.asarray(landfallfull[:x], dtype=np.float64)
+    wind_arr = np.asarray(wind_list[:x], dtype=np.float64)
 
-        # ── Penv: look up from the MSLP field at (lat, lon) ──
-        penv = -1.0
-        if Penv_field is not None and l < len(latfull):
-            _li = _lat_to_idx(latfull[l])
-            _lo = _lon_to_idx(lonfull[l])
-            if 0 <= _li < Penv_field.shape[0] and 0 <= _lo < Penv_field.shape[1]:
-                _v = float(Penv_field[_li, _lo])
-                if np.isfinite(_v):
-                    penv = round(_v, 1)
+    # ---------------------------------------------------------
+    # 1) Batch distance-to-coast computation
+    # ---------------------------------------------------------
+    dist_arr = np.zeros(x, dtype=np.float64)
 
-        category = TC_Category(wind_list[l])
+    ocean_mask = land_arr != 1.0
+    if np.any(ocean_mask):
+        dist_arr[ocean_mask] = distance_from_coast_batch(
+            lon_arr[ocean_mask],
+            lat_arr[ocean_mask],
+        )
+
+    # ---------------------------------------------------------
+    # 2) Precompute Penv for all points
+    # ---------------------------------------------------------
+    penv_arr = np.full(x, -1.0, dtype=np.float64)
+
+    if Penv_field is not None:
+        lat_idx = np.rint((90.0 - lat_arr) / _LAT_GRID_STEP).astype(np.int32)
+        lon_idx = np.rint((lon_arr % 360.0) / _LON_GRID_STEP).astype(np.int32) % 1440
+
+        valid = (
+            (lat_idx >= 0)
+            & (lat_idx < Penv_field.shape[0])
+            & (lon_idx >= 0)
+            & (lon_idx < Penv_field.shape[1])
+        )
+
+        if np.any(valid):
+            vals = Penv_field[lat_idx[valid], lon_idx[valid]]
+            finite = np.isfinite(vals)
+            penv_arr_valid = np.full(vals.shape, -1.0, dtype=np.float64)
+            penv_arr_valid[finite] = np.round(vals[finite], 1)
+            penv_arr[valid] = penv_arr_valid
+
+    # ---------------------------------------------------------
+    # 3) Precompute categories
+    # ---------------------------------------------------------
+    category_arr = np.array([TC_Category(v) for v in wind_arr], dtype=np.int32)
+
+    # ---------------------------------------------------------
+    # 4) Append rows
+    # ---------------------------------------------------------
+    for l in range(x):
         TC_data.append(
             [
                 year,
@@ -395,22 +460,20 @@ def add_parameters_to_TC_data(
                 storm_number,
                 l,
                 idx,
-                latfull[l],
-                lonfull[l],
+                lat_arr[l],
+                lon_arr[l],
                 pressure_list[l],
                 wind_list[l],
                 rmax_list[l],
-                category,
-                landfallfull[l],
-                dist,
-                penv,
+                int(category_arr[l]),
+                land_arr[l],
+                float(dist_arr[l]),
+                float(penv_arr[l]),
                 _env_year_val,
             ]
         )
 
     return TC_data
-
-
 # ==========================================================================
 # HELPER: extract row coefficients (avoids duplicated if/elif blocks)
 # ==========================================================================
