@@ -131,73 +131,58 @@ def _simplified_pi_point(sst_K, mslp_Pa):
 
     return pmin, vmax
 
-
 def compute_pi_field_tcpyPI(sst_K, mslp_Pa, t_K, q_kgkg, p_lev_hPa):
     """
     Compute thermodynamic PI at each grid point using tcpyPI.
-
-    Parameters
-    ----------
-    sst_K : 2D array (lat, lon), SST in Kelvin
-    mslp_Pa : 2D array (lat, lon), mean sea level pressure in Pa
-    t_K : 3D array (level, lat, lon), air temperature in K on pressure levels
-    q_kgkg : 3D array (level, lat, lon), specific humidity in kg/kg
-    p_lev_hPa : 1D array, pressure levels in hPa
-
-    Returns
-    -------
-    pmin : 2D array (lat, lon), minimum sustainable central pressure (hPa)
-    vmax : 2D array (lat, lon), maximum potential intensity wind (m/s)
     """
+    sst_K = np.asarray(sst_K, dtype=np.float64, order="C")
+    mslp_Pa = np.asarray(mslp_Pa, dtype=np.float64, order="C")
+    t_K = np.asarray(t_K, dtype=np.float64, order="C")
+    q_kgkg = np.asarray(q_kgkg, dtype=np.float64, order="C")
+    p_lev_hPa = np.asarray(p_lev_hPa, dtype=np.float64)
+
     nlat, nlon = sst_K.shape
-    pmin = np.full((nlat, nlon), np.nan)
-    vmax = np.full((nlat, nlon), np.nan)
+    pmin = np.full((nlat, nlon), np.nan, dtype=np.float32)
+    vmax = np.full((nlat, nlon), np.nan, dtype=np.float32)
 
-    for i in range(nlat):
-        for j in range(nlon):
-            try:
-                sst = float(sst_K[i, j])
-                if not np.isfinite(sst) or sst < 273.15 + 5.0:
-                    continue
+    # Convert once
+    mslp_hPa = np.where(mslp_Pa > 10000.0, mslp_Pa * 0.01, mslp_Pa)
+    t_C = t_K - 273.15
 
-                psl = float(mslp_Pa[i, j])
-                # tcpyPI expects MSLP in hPa
-                if psl > 10000:
-                    psl = psl / 100.0
+    # Convert specific humidity -> mixing ratio in g/kg once
+    denom = np.maximum(1.0 - q_kgkg, 1e-12)
+    r_gkg = (q_kgkg / denom) * 1000.0
 
-                t_col = t_K[:, i, j].astype(float)
-                q_col = q_kgkg[:, i, j].astype(float)
+    # Skip all invalid cells before entering Python loop
+    valid = np.isfinite(sst_K) & (sst_K >= 278.15) & np.isfinite(mslp_hPa)
+    valid &= np.all(np.isfinite(t_C), axis=0)
+    valid &= np.all(np.isfinite(r_gkg), axis=0)
 
-                if np.any(~np.isfinite(t_col)) or np.any(~np.isfinite(q_col)):
-                    continue
+    ii, jj = np.where(valid)
 
-                # Convert specific humidity to mixing ratio for tcpyPI
-                r_col = q_col / (1.0 - q_col)  # mixing ratio kg/kg
+    for k in range(ii.size):
+        i = ii[k]
+        j = jj[k]
+        try:
+            result = calc_pi(
+                float(sst_K[i, j] - 273.15),
+                float(mslp_hPa[i, j]),
+                p_lev_hPa,
+                t_C[:, i, j],
+                r_gkg[:, i, j],
+            )
+            v_out = result[0]
+            p_out = result[1]
+            ifl = result[2]
 
-                # tcpyPI.pi signature:
-                # pi(TEFULL, p, tc, r, TEFULL is SST in K, p levels in hPa,
-                #    tc is temperature in C, r is mixing ratio in g/kg)
-                result = calc_pi(
-                    sst - 273.15,  # SST in K  (or C depending on version)
-                    psl,  # surface pressure hPa
-                    p_lev_hPa,  # pressure levels hPa
-                    t_col - 273.15,  # temperature in Celsius
-                    r_col * 1000.0,  # mixing ratio in g/kg
-                )
-                # result is (VMAX, PMIN, IFL, TO, LNB)
-                v_out = result[0]
-                p_out = result[1]
-                ifl = result[2]
+            if ifl >= 1 and np.isfinite(v_out) and np.isfinite(p_out):
+                vmax[i, j] = v_out
+                pmin[i, j] = p_out
 
-                if ifl >= 1 and np.isfinite(v_out) and np.isfinite(p_out):
-                    vmax[i, j] = v_out
-                    pmin[i, j] = p_out
-
-            except Exception:
-                continue
+        except Exception:
+            continue
 
     return pmin, vmax
-
 
 def compute_pi_field_simplified(sst_K, mslp_Pa):
     """
