@@ -1,29 +1,41 @@
 """
 Download and prepare CDS SEAS5 seasonal forecast fields for SIENA-IH-STORM.
 
+CDS dataset structure (from xr.open_dataset):
+  Dimensions:
+    number: 51                    <- ensemble members (always all 51)
+    forecast_reference_time: 1    <- init date
+    forecastMonth: 6              <- lead time months
+    pressure_level: 12            <- standard SEAS5 levels
+    latitude: 180, longitude: 360 <- 1 deg grid
+  Data variables: u, v, t, q (pressure levels)
+  Surface file:   sst, msl       (single level, same member/time dims)
+
 Workflow:
-  1. Download SEAS5 monthly-mean fields for one ensemble member
-     (U200, U850, V200, V850, T600, Q600, SST, MSLP)
-  2. Regrid to 0.25° (bilinear) to match ERA5-derived model fields
-  3. Compute derived variables:
-       VWS  = sqrt((u200-u850)^2 + (v200-v850)^2)
-       RH600 from Q600 + T600 via Clausius-Clapeyron
-  4. Compute PI from SST, MSLP, T-profile, Q-profile using tcpyPI
-  5. Save as env_yearly/{STEM}_{env_year}_{month}.npy
+  1. Download SEAS5 monthly-mean fields (single request -> all 51 members)
+  2. For each ensemble member:
+     a. Regrid to 0.25 deg to match ERA5 model fields
+     b. Compute VWS, RH600
+     c. Compute PI via tcpyPI from full T/Q profile
+     d. Derive ONI 3.4 from member's Nino 3.4 SST
+     e. Save as env_yearly/{STEM}_{env_year}_{month}.npy
+     f. Optionally write forecast_config.json with auto-derived phases
 
 Usage:
+  # Download once + process all members + generate configs:
   python MASTER_forecast_fields.py \
       --init-date 2026-04-01 \
       --lead-months 6 \
-      --member 1 \
-      --env-year 9999
+      --generate-config \
+      --active-months 6 7 8 9 10 11
 
-  # Loop over all 51 members:
-  for m in $(seq 0 50); do
-      python MASTER_forecast_fields.py \
-          --init-date 2026-04-01 --lead-months 6 \
-          --member $m --env-year $((10000 + m))
-  done
+  # Process specific members only (from already-downloaded files):
+  python MASTER_forecast_fields.py \
+      --init-date 2026-04-01 \
+      --lead-months 6 \
+      --member 0 12 37 \
+      --skip-download \
+      --generate-config
 """
 
 import argparse
@@ -34,21 +46,13 @@ import pandas as pd
 import xarray as xr
 from scipy.interpolate import RegularGridInterpolator
 
-# Conditional imports — fail gracefully if not installed
 try:
     import cdsapi
 except ImportError:
     cdsapi = None
 
 try:
-    from CODE.potential_intensity import compute_pi_field
-
-    HAS_PI = True
-except ImportError:
-    HAS_PI = False
-
-try:
-    from CODE.potential_intensity import (
+    from potential_intensity import (
         compute_pi_field_tcpyPI,
         compute_pi_field_simplified,
         _nanfill_nearest,
@@ -59,30 +63,23 @@ try:
 except ImportError:
     HAS_TCPYPI = False
 
-from CODE.siena_utils import save_yearly_field, _env_yearly_dir
+from siena_utils import save_yearly_field, _env_yearly_dir
 
-__location__ = os.path.realpath(os.getcwd())
+__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
 
 # =========================================================================
-# CDS download
+# CDS download — single request, all 51 members included
 # =========================================================================
 
 
-def download_seas5(init_date, lead_months, member, out_dir):
+def download_seas5(init_date, lead_months, out_dir):
     """
     Download SEAS5 monthly forecast from CDS.
+    CDS always returns ALL 51 ensemble members in a single file,
+    regardless of any 'member' parameter in the request.
 
-    Parameters
-    ----------
-    init_date : str, e.g. "2026-04-01"
-    lead_months : int, number of months to download
-    member : int, ensemble member index (0-50)
-    out_dir : str, directory for raw downloads
-
-    Returns
-    -------
-    dict : {variable_name: path_to_downloaded_nc}
+    Returns dict: {"pl": path, "sfc": path}
     """
     if cdsapi is None:
         raise ImportError(
@@ -94,35 +91,11 @@ def download_seas5(init_date, lead_months, member, out_dir):
     client = cdsapi.Client()
 
     year, month, _ = init_date.split("-")
-    leadtime_hours = [str(h) for h in range(0, lead_months * 730, 730)][:lead_months]
-    # CDS uses leadtime_hour for monthly means; compute month offsets
     leadtime_months = list(range(1, lead_months + 1))
 
-    # --- Pressure-level variables ---
-    # Download the FULL profile (all standard levels) for T and Q so
-    # that tcpyPI can compute thermodynamic PI from the complete
-    # atmospheric column.  U/V only needed at 200+850 hPa for VWS,
-    # but CDS returns all requested levels in one file, so we request
-    # all standard levels and subset at processing time.
-    #
-    # SEAS5 standard pressure levels (hPa):
-    SEAS5_LEVELS = [
-        "10",
-        "30",
-        "50",
-        "100",
-        "200",
-        "300",
-        "400",
-        "500",
-        "700",
-        "850",
-        "925",
-        "1000",
-    ]
-
-    pl_file = os.path.join(out_dir, f"seas5_pl_m{member}.nc")
+    pl_file = os.path.join(out_dir, "seas5_pl.nc")
     if not os.path.exists(pl_file):
+        print("Downloading SEAS5 pressure-level fields (all 51 members)...")
         client.retrieve(
             "seasonal-monthly-pressure-levels",
             {
@@ -134,22 +107,22 @@ def download_seas5(init_date, lead_months, member, out_dir):
                     "temperature",
                     "specific_humidity",
                 ],
-                "pressure_level": SEAS5_LEVELS,
+                "pressure_level": "all",
                 "product_type": "monthly_mean",
                 "year": year,
                 "month": month.lstrip("0"),
                 "leadtime_month": leadtime_months,
                 "data_format": "netcdf",
-                "member": str(member),
             },
             pl_file,
         )
+        print(f"  Saved: {pl_file}")
     else:
         print(f"  Skipping download (exists): {pl_file}")
 
-    # --- Single-level variables (SST, MSLP) ---
-    sfc_file = os.path.join(out_dir, f"seas5_sfc_m{member}.nc")
+    sfc_file = os.path.join(out_dir, "seas5_sfc.nc")
     if not os.path.exists(sfc_file):
+        print("Downloading SEAS5 surface fields (all 51 members)...")
         client.retrieve(
             "seasonal-monthly-single-levels",
             {
@@ -164,10 +137,10 @@ def download_seas5(init_date, lead_months, member, out_dir):
                 "month": month.lstrip("0"),
                 "leadtime_month": leadtime_months,
                 "data_format": "netcdf",
-                "member": str(member),
             },
             sfc_file,
         )
+        print(f"  Saved: {sfc_file}")
     else:
         print(f"  Skipping download (exists): {sfc_file}")
 
@@ -180,25 +153,12 @@ def download_seas5(init_date, lead_months, member, out_dir):
 
 
 def regrid_to_025(field, src_lats, src_lons, dst_lats=None, dst_lons=None):
-    """
-    Bilinear regrid from source grid to 0.25° global grid.
-
-    Parameters
-    ----------
-    field : 2D array (lat, lon)
-    src_lats, src_lons : 1D arrays, source coordinates
-    dst_lats, dst_lons : 1D arrays, target coordinates (default: 0.25° global)
-
-    Returns
-    -------
-    2D array on the target grid
-    """
+    """Bilinear regrid from source grid to 0.25 deg global grid."""
     if dst_lats is None:
         dst_lats = np.arange(90, -90.25, -0.25)
     if dst_lons is None:
         dst_lons = np.arange(0, 360, 0.25)
 
-    # Ensure monotonically increasing for RegularGridInterpolator
     if src_lats[0] > src_lats[-1]:
         src_lats = src_lats[::-1]
         field = field[::-1, :]
@@ -225,24 +185,9 @@ def compute_vws(u200, u850, v200, v850):
 
 
 def compute_rh_from_q_t(q, t, pressure_pa=60000.0):
-    """
-    Relative humidity from specific humidity and temperature at a given
-    pressure level.
-
-    Parameters
-    ----------
-    q : array, specific humidity (kg/kg)
-    t : array, temperature (K)
-    pressure_pa : float, pressure level in Pa (default 600 hPa)
-
-    Returns
-    -------
-    array, relative humidity in %
-    """
-    # Saturation vapour pressure via Tetens (WMO)
+    """Relative humidity from specific humidity and temperature."""
     t_c = t - 273.15
-    es = 611.2 * np.exp(17.67 * t_c / (t_c + 243.5))  # Pa
-    # Mixing ratio from specific humidity
+    es = 611.2 * np.exp(17.67 * t_c / (t_c + 243.5))
     w = q / (1.0 - q)
     ws = 0.622 * es / (pressure_pa - es)
     rh = 100.0 * w / ws
@@ -250,231 +195,380 @@ def compute_rh_from_q_t(q, t, pressure_pa=60000.0):
 
 
 # =========================================================================
-# Main pipeline
+# Per-member field extraction and processing
 # =========================================================================
 
 
-def process_forecast(init_date, lead_months, member, env_year):
+def _nearest_level_idx(levels, target):
+    """Index of nearest pressure level to target (hPa)."""
+    return int(np.abs(levels - target).argmin())
+
+
+def process_member(
+    ds_pl, ds_sfc, member_idx, init_date, lead_months, env_year, dst_lats, dst_lons
+):
     """
-    Full pipeline: download → regrid → derive → save.
+    Extract, regrid, derive, and save fields for a single ensemble member.
 
     Parameters
     ----------
+    ds_pl : xarray.Dataset, pressure-level data (all members, already open)
+    ds_sfc : xarray.Dataset, surface data (all members, already open)
+    member_idx : int, index into the 'number' dimension (0-50)
     init_date : str, "YYYY-MM-DD"
     lead_months : int
-    member : int, ensemble member (0-50)
-    env_year : int, synthetic year label for storage (e.g. 9999, or 10000+member)
+    env_year : int, synthetic year label for storage (e.g. 10012 for member 12)
+    dst_lats, dst_lons : 1D arrays, target 0.25 deg grid
     """
-    raw_dir = os.path.join(__location__, "forecast_raw", f"member_{member}")
-    files = download_seas5(init_date, lead_months, member, raw_dir)
+    init_month = int(init_date[5:7])
 
-    # ── Load pressure-level data ──
-    ds_pl = xr.open_dataset(files["pl"])
-    ds_sfc = xr.open_dataset(files["sfc"])
+    # Subset to this member, squeeze out forecast_reference_time
+    pl = ds_pl.isel(number=member_idx)
+    sfc = ds_sfc.isel(number=member_idx)
+    if "forecast_reference_time" in pl.dims:
+        pl = pl.squeeze("forecast_reference_time")
+    if "forecast_reference_time" in sfc.dims:
+        sfc = sfc.squeeze("forecast_reference_time")
 
-    # Identify coordinate names (CDS varies between datasets)
-    lat_name = "latitude" if "latitude" in ds_pl.dims else "lat"
-    lon_name = "longitude" if "longitude" in ds_pl.dims else "lon"
-    time_name = "forecast_reference_time"
-    for candidate in ["forecastMonth", "time", "valid_time", "step"]:
-        if candidate in ds_pl.dims:
-            time_name = candidate
-            break
-
-    plev_name = "pressure_level" if "pressure_level" in ds_pl.dims else "level"
-    p_lev_all = ds_pl[plev_name].values.astype(float)  # all levels in hPa
-
-    src_lats = ds_pl[lat_name].values
-    src_lons = ds_pl[lon_name].values
-
-    # SEAS5 native grid (~1°) — this IS the PI computation grid.
-    # VWS/RH/MSLP/SST get regridded to 0.25°; PI is computed at native
-    # resolution and then upscaled, matching the ERA5 pipeline.
+    # Source grid
+    src_lats = pl.latitude.values
+    src_lons = pl.longitude.values
     native_shape = (len(src_lats), len(src_lons))
-
-    # Target grid: load from an existing ERA5-derived field to ensure consistency
-    try:
-        ds_ref = xr.open_dataset(os.path.join(__location__, "Monthly_mean_SST.nc"))
-        dst_lats = ds_ref.latitude.values
-        dst_lons = ds_ref.longitude.values
-        ds_ref.close()
-    except Exception:
-        dst_lats = np.arange(90, -90.25, -0.25)
-        dst_lons = np.arange(0, 360, 0.25)
-
     fine_shape = (len(dst_lats), len(dst_lons))
 
-    # Parse init date to determine forecast valid months
-    init_year, init_month = int(init_date[:4]), int(init_date[5:7])
+    # Pressure levels
+    p_levels = pl.pressure_level.values.astype(float)
+    idx_200 = _nearest_level_idx(p_levels, 200)
+    idx_600 = _nearest_level_idx(p_levels, 600)
+    idx_850 = _nearest_level_idx(p_levels, 850)
 
-    # Check if tcpyPI is available
-    try:
-        from potential_intensity import (
-            HAS_TCPYPI,
-            compute_pi_field_tcpyPI,
-            compute_pi_field_simplified,
-            _nanfill_nearest,
-            _upscale_to_target,
-        )
-    except ImportError:
-        HAS_TCPYPI = False
+    n_leads = min(int(pl.sizes["forecastMonth"]), lead_months)
 
-    print(f"Processing member {member}, env_year={env_year}")
-    if HAS_TCPYPI:
-        print(
-            f"  PI: full thermodynamic (tcpyPI) at native {native_shape}, "
-            f"upscaling to {fine_shape}"
-        )
-    else:
-        print(f"  PI: simplified SST-based (install tcpyPI for full PI)")
-
-    n_times = ds_pl.sizes.get(time_name, lead_months)
-    for t_idx in range(min(n_times, lead_months)):
-        # Valid month for this lead time
+    for t_idx in range(n_leads):
         valid_month = ((init_month - 1) + t_idx + 1) % 12 + 1
 
-        def _sel(ds, var, plev=None):
-            """Select time step and optionally pressure level."""
-            arr = ds[var].isel({time_name: t_idx})
-            if plev is not None:
-                # Find nearest level
-                levels = arr[plev_name].values
-                li = int(np.abs(levels - plev).argmin())
-                arr = arr.isel({plev_name: li})
-            return arr.values
+        # Pressure-level fields: (pressure_level, latitude, longitude)
+        pl_t = pl.isel(forecastMonth=t_idx)
 
-        def _sel_profile(ds, var):
-            """Select time step, keep all pressure levels → (level, lat, lon)."""
-            return ds[var].isel({time_name: t_idx}).values
-
-        # ── Extract and regrid VWS components (only 200+850 needed) ──
         u200 = regrid_to_025(
-            _sel(ds_pl, "u", 200), src_lats, src_lons, dst_lats, dst_lons
+            pl_t["u"].isel(pressure_level=idx_200).values,
+            src_lats,
+            src_lons,
+            dst_lats,
+            dst_lons,
         )
         u850 = regrid_to_025(
-            _sel(ds_pl, "u", 850), src_lats, src_lons, dst_lats, dst_lons
+            pl_t["u"].isel(pressure_level=idx_850).values,
+            src_lats,
+            src_lons,
+            dst_lats,
+            dst_lons,
         )
         v200 = regrid_to_025(
-            _sel(ds_pl, "v", 200), src_lats, src_lons, dst_lats, dst_lons
+            pl_t["v"].isel(pressure_level=idx_200).values,
+            src_lats,
+            src_lons,
+            dst_lats,
+            dst_lons,
         )
         v850 = regrid_to_025(
-            _sel(ds_pl, "v", 850), src_lats, src_lons, dst_lats, dst_lons
+            pl_t["v"].isel(pressure_level=idx_850).values,
+            src_lats,
+            src_lons,
+            dst_lats,
+            dst_lons,
         )
-
-        # ── Extract 600 hPa T/Q for RH computation (regrid to 0.25°) ──
         t600 = regrid_to_025(
-            _sel(ds_pl, "t", 600), src_lats, src_lons, dst_lats, dst_lons
+            pl_t["t"].isel(pressure_level=idx_600).values,
+            src_lats,
+            src_lons,
+            dst_lats,
+            dst_lons,
         )
         q600 = regrid_to_025(
-            _sel(ds_pl, "q", 600), src_lats, src_lons, dst_lats, dst_lons
+            pl_t["q"].isel(pressure_level=idx_600).values,
+            src_lats,
+            src_lons,
+            dst_lats,
+            dst_lons,
         )
 
-        # ── Surface fields (regrid to 0.25°) ──
-        sfc_lats = ds_sfc[lat_name].values
-        sfc_lons = ds_sfc[lon_name].values
+        # Surface fields
+        sfc_t = sfc.isel(forecastMonth=t_idx)
+        sfc_lats = sfc_t.latitude.values
+        sfc_lons = sfc_t.longitude.values
+
         sst = regrid_to_025(
-            _sel(ds_sfc, "sst", None), sfc_lats, sfc_lons, dst_lats, dst_lons
+            sfc_t["sst"].values,
+            sfc_lats,
+            sfc_lons,
+            dst_lats,
+            dst_lons,
         )
         mslp = regrid_to_025(
-            _sel(ds_sfc, "msl", None), sfc_lats, sfc_lons, dst_lats, dst_lons
+            sfc_t["msl"].values,
+            sfc_lats,
+            sfc_lons,
+            dst_lats,
+            dst_lons,
         )
-        # MSLP: Pa → hPa
-        mslp *= 0.01
+        mslp *= 0.01  # Pa -> hPa
 
-        # ── Derived fields ──
+        # Derived
         vws = compute_vws(u200, u850, v200, v850)
         rh600 = compute_rh_from_q_t(q600, t600, pressure_pa=60000.0)
 
-        # ── Thermodynamic PI from full T/Q profile ──
-        # Compute at SEAS5 native resolution (~1°), then upscale to 0.25°.
-        # This mirrors the ERA5 pipeline in climatology.py exactly.
+        # Thermodynamic PI
         if HAS_TCPYPI:
-            # Full profiles at native resolution: (levels, lat, lon)
-            t_profile = _sel_profile(ds_pl, "t")
-            q_profile = _sel_profile(ds_pl, "q")
+            t_profile = pl_t["t"].values  # (pressure_level, lat, lon)
+            q_profile = pl_t["q"].values
 
-            # SST and MSLP at native resolution (no regrid) for PI computation
-            sst_native = _sel(ds_sfc, "sst", None)
-            mslp_native = _sel(ds_sfc, "msl", None)
-            # Handle grid mismatch: coarsen sfc to match pl if needed
+            sst_native = sfc_t["sst"].values
+            mslp_native = sfc_t["msl"].values * 0.01
             if sst_native.shape != native_shape:
-                from potential_intensity import _coarsen_to_match
-
                 sst_native = _coarsen_to_match(sst_native, native_shape)
                 mslp_native = _coarsen_to_match(mslp_native, native_shape)
 
-            # MSLP to hPa for PI computation
-            mslp_native_hPa = mslp_native * 0.01
-
-            pmin, vmax = compute_pi_field_tcpyPI(
-                sst_native, mslp_native_hPa, t_profile, q_profile, p_lev_all
+            pmin, _ = compute_pi_field_tcpyPI(
+                sst_native,
+                mslp_native,
+                t_profile,
+                q_profile,
+                p_levels,
             )
-
-            # NaN-fill coastal cells before upscaling
             pmin = _nanfill_nearest(pmin)
-
-            # Upscale from native (~1°) to 0.25°
             if pmin.shape != fine_shape:
                 pmin = _upscale_to_target(pmin, fine_shape)
         else:
-            # Simplified fallback (already at 0.25° from regridded SST/MSLP)
-            pmin, vmax = compute_pi_field_simplified(sst, mslp)
+            pmin, _ = compute_pi_field_simplified(sst, mslp)
 
-        # ── Save all fields ──
+        # Save
         save_yearly_field(__location__, "VWS", env_year, valid_month, vws)
         save_yearly_field(__location__, "RH600", env_year, valid_month, rh600)
         save_yearly_field(__location__, "MSLP", env_year, valid_month, mslp)
         save_yearly_field(__location__, "SST", env_year, valid_month, sst)
         save_yearly_field(__location__, "PI", env_year, valid_month, pmin)
 
-        print(f"  Saved month {valid_month} (lead {t_idx + 1})")
+        print(f"    month {valid_month} (lead {t_idx + 1}) saved")
 
-    ds_pl.close()
-    ds_sfc.close()
-    print(f"Done: member {member} → env_year {env_year}")
+
+# =========================================================================
+# ONI 3.4 derivation from SEAS5 SST + observed climate_index.csv
+# =========================================================================
+
+NINO34_LAT = (-5.0, 5.0)
+NINO34_LON = (190.0, 240.0)  # 170W-120W in 0-360 convention
+ONI_CLIM_PERIOD = (1991, 2020)
+
+
+def compute_nino34_sst(sst_field, lats, lons):
+    """Area-weighted mean SST over Nino 3.4 region."""
+    lat_mask = (lats >= NINO34_LAT[0]) & (lats <= NINO34_LAT[1])
+    lon_mask = (lons >= NINO34_LON[0]) & (lons <= NINO34_LON[1])
+    region = sst_field[np.ix_(lat_mask, lon_mask)]
+    region_lats = lats[lat_mask]
+    weights = np.cos(np.deg2rad(region_lats))[:, None]
+    weights = np.broadcast_to(weights, region.shape)
+    valid = np.isfinite(region)
+    if valid.sum() == 0:
+        return np.nan
+    return float(np.nansum(region * weights) / np.nansum(weights * valid))
+
+
+def load_oni_climatology():
+    """
+    Per-month baseline Nino 3.4 SST from ERA5 Monthly_mean_SST.nc
+    over the 1991-2020 climatology period.
+    """
+    sst_nc = os.path.join(__location__, "Monthly_mean_SST.nc")
+    if not os.path.exists(sst_nc):
+        return None
+
+    ds = xr.open_dataset(sst_nc)
+    var = "sst" if "sst" in ds else list(ds.data_vars)[0]
+    time_dim = "valid_time" if "valid_time" in ds.dims else "time"
+    lats = ds.latitude.values
+    lons = ds.longitude.values
+    times = pd.to_datetime(ds[time_dim].values)
+
+    monthly_vals = {m: [] for m in range(1, 13)}
+    for t_idx in range(len(times)):
+        yr, mo = times[t_idx].year, times[t_idx].month
+        if ONI_CLIM_PERIOD[0] <= yr <= ONI_CLIM_PERIOD[1]:
+            sst = ds[var].isel({time_dim: t_idx}).values
+            val = compute_nino34_sst(sst, lats, lons)
+            if np.isfinite(val):
+                monthly_vals[mo].append(val)
+    ds.close()
+
+    return {
+        m: float(np.mean(monthly_vals[m])) if monthly_vals[m] else np.nan
+        for m in range(1, 13)
+    }
+
+
+def compute_oni_from_member(
+    ds_sfc, member_idx, init_date, lead_months, sst_climatology
+):
+    """
+    Compute monthly Nino 3.4 SST anomalies from one SEAS5 member.
+    Works directly on the already-open ds_sfc dataset (all members).
+    Returns raw monthly anomalies (not 3-month running mean).
+    """
+    sfc = ds_sfc.isel(number=member_idx)
+    if "forecast_reference_time" in sfc.dims:
+        sfc = sfc.squeeze("forecast_reference_time")
+
+    lats = sfc.latitude.values
+    lons = sfc.longitude.values
+    init_month = int(init_date[5:7])
+
+    anomalies = {}
+    n_leads = min(int(sfc.sizes["forecastMonth"]), lead_months)
+    for t_idx in range(n_leads):
+        valid_month = ((init_month - 1) + t_idx + 1) % 12 + 1
+        sst_field = sfc["sst"].isel(forecastMonth=t_idx).values
+        nino34 = compute_nino34_sst(sst_field, lats, lons)
+        baseline = sst_climatology.get(valid_month, np.nan)
+        if np.isfinite(nino34) and np.isfinite(baseline):
+            anomalies[valid_month] = nino34 - baseline
+    return anomalies
+
+
+def build_phase_schedule_from_seas5(
+    ds_sfc,
+    member_idx,
+    init_date,
+    lead_months,
+    climate_index_path="climate_index.csv",
+    threshold=0.5,
+):
+    """
+    Build a 12-month phase_schedule by combining:
+      1. Observed ONI from climate_index.csv (months before init)
+      2. SEAS5-derived ONI from this member's SST (forecast months)
+      3. Persistence of last forecast phase (beyond SEAS5 horizon)
+
+    Parameters
+    ----------
+    ds_sfc : xarray.Dataset (all members, already open)
+    member_idx : int
+    init_date : str
+    lead_months : int
+    climate_index_path : str
+    threshold : float
+
+    Returns
+    -------
+    dict : {month_int: "LN"|"NEU"|"EN"} for months 1-12
+    """
+    init_year = int(init_date[:4])
+    init_month = int(init_date[5:7])
+
+    # 1. Observed ONI
+    from siena_utils import load_climate_index_table
+
+    oni_df = load_climate_index_table(os.path.join(__location__, climate_index_path))
+    observed_oni = {}
+    for _, row in oni_df.iterrows():
+        y, m = int(row["year"]), int(row["month"])
+        if y == init_year and m < init_month:
+            observed_oni[m] = float(row["climate_index"])
+        if y == init_year - 1 and m >= 11:
+            observed_oni[m - 12] = float(row["climate_index"])
+
+    # 2. SEAS5-derived Nino 3.4 anomaly
+    sst_climatology = load_oni_climatology()
+    if sst_climatology is None:
+        print("WARNING: Cannot compute SST climatology. Defaulting to NEU.")
+        return {m: "NEU" for m in range(1, 13)}
+
+    forecast_oni = compute_oni_from_member(
+        ds_sfc,
+        member_idx,
+        init_date,
+        lead_months,
+        sst_climatology,
+    )
+
+    # 3. Merge
+    monthly_anomaly = {}
+    for m in range(1, 13):
+        if m in observed_oni:
+            monthly_anomaly[m] = observed_oni[m]
+        elif m in forecast_oni:
+            monthly_anomaly[m] = forecast_oni[m]
+
+    # 4. 3-month running mean ONI
+    oni_3m = {}
+    for m in range(1, 13):
+        vals = []
+        for offset in [-1, 0, 1]:
+            adj = m + offset
+            if adj in monthly_anomaly:
+                vals.append(monthly_anomaly[adj])
+            elif adj <= 0 and adj in observed_oni:
+                vals.append(observed_oni[adj])
+            elif adj == 13 and 1 in monthly_anomaly:
+                vals.append(monthly_anomaly[1])
+        if vals:
+            oni_3m[m] = float(np.nanmean(vals))
+
+    # 5. Classify + persistence
+    def _classify(v):
+        return "EN" if v >= threshold else ("LN" if v <= -threshold else "NEU")
+
+    phase_schedule = {}
+    last_phase = "NEU"
+    for m in range(1, 13):
+        if m in oni_3m and np.isfinite(oni_3m[m]):
+            phase_schedule[m] = _classify(oni_3m[m])
+            last_phase = phase_schedule[m]
+        else:
+            phase_schedule[m] = last_phase
+
+    print(f"  Phase schedule (member {member_idx}):")
+    for m in range(1, 13):
+        src = (
+            "obs" if m in observed_oni else "seas5" if m in forecast_oni else "persist"
+        )
+        oni_val = oni_3m.get(m, np.nan)
+        print(
+            f"    month {m:2d}: {phase_schedule[m]:3s}  "
+            f"(ONI={oni_val:+.2f}, source={src})"
+        )
+
+    return phase_schedule
+
+
+# =========================================================================
+# Config generation
+# =========================================================================
 
 
 def generate_forecast_config(
     init_date,
     lead_months,
-    member,
+    member_idx,
     env_year,
     active_months,
     phase_schedule,
     observed_months=None,
     out_path="forecast_config.json",
 ):
-    """
-    Generate a forecast_config.json from parameters.
-
-    Parameters
-    ----------
-    init_date : str, "YYYY-MM-DD"
-    lead_months : int
-    member : int
-    env_year : int, synthetic year label for forecast fields
-    active_months : list of int, e.g. [6,7,8,9,10,11]
-    phase_schedule : dict {month_int: "LN"|"NEU"|"EN"} for ALL 12 months
-        Can be built manually or via build_phase_schedule_from_seas5().
-    observed_months : list of int or None, months with real ERA5 data
-        If None, inferred from init_date (all months before init month).
-    out_path : str
-    """
+    """Write forecast_config.json for one ensemble member."""
     init_year = int(init_date[:4])
     init_month = int(init_date[5:7])
 
     if observed_months is None:
         observed_months = list(range(1, init_month))
 
-    forecast_months = []
-    for i in range(lead_months):
-        fm = ((init_month - 1) + i + 1) % 12 + 1
-        forecast_months.append(fm)
+    forecast_months = [((init_month - 1) + i + 1) % 12 + 1 for i in range(lead_months)]
 
     config = {
         "mode": "seasonal_forecast",
         "base_year": init_year,
-        "ensemble_member": member,
+        "ensemble_member": member_idx,
         "init_date": init_date,
         "months": {},
     }
@@ -499,290 +593,114 @@ def generate_forecast_config(
                 "phase": phase,
             }
 
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(config, f, indent=2)
-    print(f"Wrote forecast config: {out_path}")
+    print(f"  Config written: {out_path}")
     return config
 
 
 # =========================================================================
-# ONI 3.4 derivation from SEAS5 SST + observed climate_index.csv
+# Main pipeline: download once, process N members
 # =========================================================================
 
-# Niño 3.4 region: 5°S–5°N, 170°W–120°W  (in 0–360: 190°–240°)
-NINO34_LAT = (-5.0, 5.0)
-NINO34_LON = (190.0, 240.0)
 
-# Standard 30-year climatology period for ONI baseline
-# (NOAA uses a trailing 30-yr mean, updated every 5 years)
-ONI_CLIM_PERIOD = (1991, 2020)
-
-
-def compute_nino34_sst(sst_field, lats, lons):
-    """
-    Compute area-weighted mean SST over the Niño 3.4 region from a
-    single 2D SST field.
-
-    Parameters
-    ----------
-    sst_field : 2D array (lat, lon), SST in K or °C
-    lats : 1D array, latitude coordinates
-    lons : 1D array, longitude coordinates
-
-    Returns
-    -------
-    float : area-weighted mean SST over Niño 3.4 (same units as input)
-    """
-    lat_mask = (lats >= NINO34_LAT[0]) & (lats <= NINO34_LAT[1])
-    lon_mask = (lons >= NINO34_LON[0]) & (lons <= NINO34_LON[1])
-
-    region = sst_field[np.ix_(lat_mask, lon_mask)]
-    region_lats = lats[lat_mask]
-
-    # Area weighting by cos(latitude)
-    weights = np.cos(np.deg2rad(region_lats))[:, None]
-    weights = np.broadcast_to(weights, region.shape)
-
-    valid = np.isfinite(region)
-    if valid.sum() == 0:
-        return np.nan
-
-    return float(np.nansum(region * weights) / np.nansum(weights * valid))
-
-
-def load_oni_climatology(climate_index_path, clim_period=ONI_CLIM_PERIOD):
-    """
-    Load monthly SST baseline from the observed climate_index.csv for ONI
-    anomaly computation.
-
-    The ONI is defined as the 3-month running mean of Niño 3.4 SST anomaly
-    relative to a 30-year climatological mean.  We compute the per-month
-    mean Niño 3.4 SST from ERA5 historical data (which is what the
-    climatology pipeline already produces).
-
-    For simplicity, we use the ONI values already in climate_index.csv
-    (which are anomalies) for observed months, and compute raw anomalies
-    from SEAS5 SST for forecast months using the ERA5 monthly SST
-    climatology as baseline.
-
-    Parameters
-    ----------
-    climate_index_path : str, path to climate_index.csv
-    clim_period : tuple (start_year, end_year)
-
-    Returns
-    -------
-    dict : {month_int: float} monthly climatological Niño 3.4 SST (K)
-           Returns None if ERA5 SST data not available.
-    """
-    # Try to compute from ERA5 SST NetCDF (most accurate)
-    sst_nc = os.path.join(__location__, "Monthly_mean_SST.nc")
-    if os.path.exists(sst_nc):
-        ds = xr.open_dataset(sst_nc)
-        var = "sst" if "sst" in ds else list(ds.data_vars)[0]
-        time_dim = "valid_time" if "valid_time" in ds.dims else "time"
-        lats = ds.latitude.values
-        lons = ds.longitude.values
-        times = pd.to_datetime(ds[time_dim].values)
-
-        monthly_sums = {m: [] for m in range(1, 13)}
-        for t_idx in range(len(times)):
-            yr, mo = times[t_idx].year, times[t_idx].month
-            if clim_period[0] <= yr <= clim_period[1]:
-                sst = ds[var].isel({time_dim: t_idx}).values
-                val = compute_nino34_sst(sst, lats, lons)
-                if np.isfinite(val):
-                    monthly_sums[mo].append(val)
-        ds.close()
-
-        clim = {}
-        for m in range(1, 13):
-            if monthly_sums[m]:
-                clim[m] = float(np.mean(monthly_sums[m]))
-            else:
-                clim[m] = np.nan
-        return clim
-
-    return None
-
-
-def compute_oni_from_seas5(
-    sst_nc_path, init_date, lead_months, sst_climatology, lats=None, lons=None
-):
-    """
-    Compute monthly Niño 3.4 SST anomalies from a SEAS5 member's SST field.
-
-    Returns raw monthly anomalies (not 3-month running mean) — the running
-    mean is applied in build_phase_schedule_from_seas5() where we combine
-    observed + forecast months.
-
-    Parameters
-    ----------
-    sst_nc_path : str, path to SEAS5 surface NetCDF
-    init_date : str, "YYYY-MM-DD"
-    lead_months : int
-    sst_climatology : dict {month: float}, baseline Niño 3.4 SST from ERA5
-    lats, lons : 1D arrays (optional, read from file if None)
-
-    Returns
-    -------
-    dict : {month_int: float} Niño 3.4 SST anomaly per forecast month
-    """
-    ds = xr.open_dataset(sst_nc_path)
-    lat_name = "latitude" if "latitude" in ds.dims else "lat"
-    lon_name = "longitude" if "longitude" in ds.dims else "lon"
-    if lats is None:
-        lats = ds[lat_name].values
-    if lons is None:
-        lons = ds[lon_name].values
-
-    time_name = None
-    for candidate in ["forecastMonth", "time", "valid_time", "step"]:
-        if candidate in ds.dims:
-            time_name = candidate
-            break
-
-    var = "sst" if "sst" in ds else list(ds.data_vars)[0]
-    init_month = int(init_date[5:7])
-
-    anomalies = {}
-    n_times = ds.sizes.get(time_name, lead_months)
-    for t_idx in range(min(n_times, lead_months)):
-        valid_month = ((init_month - 1) + t_idx + 1) % 12 + 1
-        sst_field = ds[var].isel({time_name: t_idx}).values
-        nino34 = compute_nino34_sst(sst_field, lats, lons)
-        baseline = sst_climatology.get(valid_month, np.nan)
-        if np.isfinite(nino34) and np.isfinite(baseline):
-            anomalies[valid_month] = nino34 - baseline
-        else:
-            anomalies[valid_month] = np.nan
-
-    ds.close()
-    return anomalies
-
-
-def build_phase_schedule_from_seas5(
+def process_all_members(
     init_date,
     lead_months,
-    member,
-    climate_index_path="climate_index.csv",
-    threshold=0.5,
+    members=None,
+    generate_config=False,
+    active_months=None,
+    oni_threshold=0.5,
+    skip_download=False,
 ):
     """
-    Build a complete 12-month phase_schedule by combining:
-      1. Observed ONI from climate_index.csv (months before init)
-      2. SEAS5-derived ONI from this member's SST (forecast months)
-      3. Persistence of last forecast phase (beyond SEAS5 horizon)
-
-    The ONI is computed as a 3-month running mean of Niño 3.4 SST anomaly.
-    Phase thresholds follow standard NOAA convention: ≥+0.5 → EN,
-    ≤−0.5 → LN, else NEU.
+    Full pipeline: download once -> loop over members.
 
     Parameters
     ----------
     init_date : str, "YYYY-MM-DD"
     lead_months : int
-    member : int, ensemble member index
-    climate_index_path : str, path to observed ONI CSV
-    threshold : float, default 0.5
-
-    Returns
-    -------
-    dict : {month_int: "LN"|"NEU"|"EN"} for months 1-12
+    members : list of int or None (None = all 51)
+    generate_config : bool
+    active_months : list of int
+    oni_threshold : float
+    skip_download : bool
     """
-    init_year = int(init_date[:4])
-    init_month = int(init_date[5:7])
+    raw_dir = os.path.join(__location__, "forecast_raw")
 
-    # ── 1. Observed monthly ONI from climate_index.csv ──
-    from CODE.siena_utils import load_climate_index_table
+    # Step 1: Download (once)
+    if not skip_download:
+        files = download_seas5(init_date, lead_months, raw_dir)
+    else:
+        files = {
+            "pl": os.path.join(raw_dir, "seas5_pl.nc"),
+            "sfc": os.path.join(raw_dir, "seas5_sfc.nc"),
+        }
+        for k, p in files.items():
+            if not os.path.exists(p):
+                raise FileNotFoundError(
+                    f"--skip-download but {p} not found. "
+                    f"Run without --skip-download first."
+                )
 
-    oni_df = load_climate_index_table(climate_index_path)
+    # Open datasets (shared across all members, read-only)
+    ds_pl = xr.open_dataset(files["pl"])
+    ds_sfc = xr.open_dataset(files["sfc"])
 
-    observed_oni = {}  # {month: ONI value}
-    for _, row in oni_df.iterrows():
-        if int(row["year"]) == init_year and int(row["month"]) < init_month:
-            observed_oni[int(row["month"])] = float(row["climate_index"])
-        # Also grab last few months of prior year for 3-month running mean
-        if int(row["year"]) == init_year - 1 and int(row["month"]) >= 11:
-            observed_oni[int(row["month"]) - 12] = float(row["climate_index"])
+    n_members = int(ds_pl.sizes["number"])
+    if members is None:
+        members = list(range(n_members))
 
-    # ── 2. SEAS5-derived Niño 3.4 anomaly ──
-    sst_climatology = load_oni_climatology(climate_index_path)
-    if sst_climatology is None:
-        print("WARNING: Cannot compute SST climatology. Using NEU as default.")
-        return {m: "NEU" for m in range(1, 13)}
+    # Target grid
+    try:
+        ds_ref = xr.open_dataset(os.path.join(__location__, "Monthly_mean_SST.nc"))
+        dst_lats = ds_ref.latitude.values
+        dst_lons = ds_ref.longitude.values
+        ds_ref.close()
+    except Exception:
+        dst_lats = np.arange(90, -90.25, -0.25)
+        dst_lons = np.arange(0, 360, 0.25)
 
-    raw_dir = os.path.join(__location__, "forecast_raw", f"member_{member}")
-    sfc_file = os.path.join(raw_dir, f"seas5_sfc_m{member}.nc")
-    if not os.path.exists(sfc_file):
-        print(f"WARNING: SEAS5 surface file not found: {sfc_file}")
-        return {m: "NEU" for m in range(1, 13)}
+    print(f"Processing {len(members)} members, {lead_months} lead months")
+    print(f"  PI: {'tcpyPI (full thermodynamic)' if HAS_TCPYPI else 'simplified'}")
 
-    forecast_oni = compute_oni_from_seas5(
-        sfc_file, init_date, lead_months, sst_climatology
-    )
+    for member_idx in members:
+        env_year = 10000 + member_idx
+        print(f"\n  Member {member_idx} -> env_year {env_year}")
 
-    # ── 3. Merge into a single monthly anomaly series ──
-    # Use a dict keyed by month (1-12) with the best available value
-    monthly_anomaly = {}
-    for m in range(1, 13):
-        if m in observed_oni:
-            monthly_anomaly[m] = observed_oni[m]
-        elif m in forecast_oni:
-            monthly_anomaly[m] = forecast_oni[m]
-        # else: will be filled by persistence below
-
-    # ── 4. Compute 3-month running mean ONI ──
-    # ONI for month M = mean(anomaly[M-1], anomaly[M], anomaly[M+1])
-    # When adjacent months aren't available, use what we have
-    oni_3m = {}
-    for m in range(1, 13):
-        vals = []
-        for offset in [-1, 0, 1]:
-            adj = m + offset
-            # Handle wrap-around and prior-year observations
-            if adj in monthly_anomaly:
-                vals.append(monthly_anomaly[adj])
-            elif adj <= 0 and (adj + 12) in observed_oni:
-                # prior year (stored with negative keys above)
-                vals.append(observed_oni.get(adj, np.nan))
-            elif adj == 13 and 1 in monthly_anomaly:
-                vals.append(monthly_anomaly[1])
-        if vals:
-            oni_3m[m] = float(np.nanmean(vals))
-
-    # ── 5. Classify phase and apply persistence ──
-    def _classify(oni_val):
-        if oni_val >= threshold:
-            return "EN"
-        elif oni_val <= -threshold:
-            return "LN"
-        return "NEU"
-
-    phase_schedule = {}
-    last_phase = "NEU"
-
-    for m in range(1, 13):
-        if m in oni_3m and np.isfinite(oni_3m[m]):
-            phase_schedule[m] = _classify(oni_3m[m])
-            last_phase = phase_schedule[m]
-        else:
-            # Beyond data horizon: persist last known phase
-            phase_schedule[m] = last_phase
-
-    # Log
-    print(f"Phase schedule (member {member}):")
-    for m in range(1, 13):
-        src = (
-            "obs" if m in observed_oni else "seas5" if m in forecast_oni else "persist"
-        )
-        oni_val = oni_3m.get(m, np.nan)
-        print(
-            f"  month {m:2d}: {phase_schedule[m]:3s}  "
-            f"(ONI={oni_val:+.2f}, source={src})"
+        process_member(
+            ds_pl,
+            ds_sfc,
+            member_idx,
+            init_date,
+            lead_months,
+            env_year,
+            dst_lats,
+            dst_lons,
         )
 
-    return phase_schedule
+        if generate_config:
+            phase_schedule = build_phase_schedule_from_seas5(
+                ds_sfc,
+                member_idx,
+                init_date,
+                lead_months,
+                threshold=oni_threshold,
+            )
+            generate_forecast_config(
+                init_date=init_date,
+                lead_months=lead_months,
+                member_idx=member_idx,
+                env_year=env_year,
+                active_months=active_months or [6, 7, 8, 9, 10, 11],
+                phase_schedule=phase_schedule,
+                out_path=f"forecast_configs/config_m{member_idx}.json",
+            )
+
+    ds_pl.close()
+    ds_sfc.close()
+    print(f"\nDone: {len(members)} members processed.")
 
 
 if __name__ == "__main__":
@@ -793,17 +711,17 @@ if __name__ == "__main__":
         "--init-date", required=True, help="Forecast init date YYYY-MM-DD"
     )
     parser.add_argument("--lead-months", type=int, default=6)
-    parser.add_argument("--member", type=int, default=0, help="Ensemble member (0-50)")
     parser.add_argument(
-        "--env-year",
+        "--member",
         type=int,
-        default=9999,
-        help="Synthetic year label for storage (use 10000+member for multi-member runs)",
+        nargs="*",
+        default=None,
+        help="Member indices to process (default: all 51). E.g. --member 0 12 37",
     )
     parser.add_argument(
         "--generate-config",
         action="store_true",
-        help="Also generate forecast_config.json with ONI-derived phases",
+        help="Generate forecast_config.json per member with ONI-derived phases",
     )
     parser.add_argument(
         "--active-months",
@@ -812,32 +730,20 @@ if __name__ == "__main__":
         default=[6, 7, 8, 9, 10, 11],
         help="Active season months for the target basin",
     )
+    parser.add_argument("--oni-threshold", type=float, default=0.5)
     parser.add_argument(
-        "--oni-threshold",
-        type=float,
-        default=0.5,
-        help="ONI threshold for EN/LN classification",
+        "--skip-download",
+        action="store_true",
+        help="Skip CDS download (use existing files)",
     )
     args = parser.parse_args()
 
-    # Step 1: Download and process forecast fields
-    process_forecast(args.init_date, args.lead_months, args.member, args.env_year)
-
-    # Step 2 (optional): Generate config with auto-derived phase schedule
-    if args.generate_config:
-        phase_schedule = build_phase_schedule_from_seas5(
-            args.init_date,
-            args.lead_months,
-            args.member,
-            threshold=args.oni_threshold,
-        )
-        os.makedirs("forecast_configs", exist_ok=True)
-        generate_forecast_config(
-            init_date=args.init_date,
-            lead_months=args.lead_months,
-            member=args.member,
-            env_year=args.env_year,
-            active_months=args.active_months,
-            phase_schedule=phase_schedule,
-            out_path=f"forecast_configs/config_m{args.member}.json",
-        )
+    process_all_members(
+        init_date=args.init_date,
+        lead_months=args.lead_months,
+        members=args.member,
+        generate_config=args.generate_config,
+        active_months=args.active_months,
+        oni_threshold=args.oni_threshold,
+        skip_download=args.skip_download,
+    )
