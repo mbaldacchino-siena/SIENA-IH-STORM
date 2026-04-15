@@ -27,6 +27,7 @@ from CODE.SELECT_BASIN import Basins_WMO
 from math import radians, cos, sin, asin, sqrt
 from CODE.SAMPLE_RMAX import Add_Rmax
 from scipy.stats import truncnorm
+from collections import OrderedDict
 from scipy.spatial import cKDTree
 import math
 import sys
@@ -111,32 +112,39 @@ def distance_from_coast_batch(lons, lats, degree_in_km=111.12):
 
 # Cache 2: Monthly environmental fields keyed by (stem, month, phase_str, env_year)
 # Original code called np.loadtxt (text parsing of 721×1440 grids) per storm.
-# Multiple storms in the same month re-parsed the same file.
-_FIELD_CACHE = {}
+# Multiple storms in the same month re-parsed the same file - FIFO logic for cache limit
+_FIELD_CACHE = OrderedDict()
+_FIELD_CACHE_MAXSIZE = 48
 
 
 def _load_field_cached(stem, month, phase=None, env_year=None):
     """Load a monthly field, caching the result for subsequent calls.
     If env_year is set, load year-specific field with phase-mean fallback.
+    Evicts least-recently-used entries when cache exceeds _FIELD_CACHE_MAXSIZE.
     """
     key = (stem, month, normalize_phase(phase), env_year)
-    if key not in _FIELD_CACHE:
-        try:
-            if env_year is not None:
-                # Year-specific: stem is e.g. "VWS", not "Monthly_mean_VWS"
-                # load_field_with_year_fallback handles the prefix
-                _stem = stem.replace("Monthly_mean_", "")
-                _FIELD_CACHE[key] = load_field_with_year_fallback(
-                    dir_path, _stem, month, phase=phase, env_year=env_year
-                )
-            else:
-                _FIELD_CACHE[key] = load_monthly_field(
-                    dir_path, stem, month, phase=phase
-                )
-        except Exception:
-            _FIELD_CACHE[key] = None
-    return _FIELD_CACHE[key]
+    if key in _FIELD_CACHE:
+        _FIELD_CACHE.move_to_end(key)  # mark as recently used
+        return _FIELD_CACHE[key]
 
+    # Load from disk
+    try:
+        if env_year is not None:
+            _stem = stem.replace("Monthly_mean_", "")
+            val = load_field_with_year_fallback(
+                dir_path, _stem, month, phase=phase, env_year=env_year
+            )
+        else:
+            val = load_monthly_field(dir_path, stem, month, phase=phase)
+    except Exception:
+        val = None
+
+    _FIELD_CACHE[key] = val
+    # Evict oldest entries if over capacity
+    while len(_FIELD_CACHE) > _FIELD_CACHE_MAXSIZE:
+        _FIELD_CACHE.popitem(last=False)  # pop oldest (LRU)
+
+    return val
 
 # Cache 3: Precomputed regular-grid index functions
 # The MSLP/PI/VWS/RH fields are on a regular 0.25° grid: lat from 90 to -90
