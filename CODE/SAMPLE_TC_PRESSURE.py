@@ -42,6 +42,7 @@ from CODE.siena_utils import (
     phase_code,
     load_monthly_field,
     load_field_with_year_fallback,
+    TS_THRESHOLD_MS,
 )
 
 # ==========================================================================
@@ -334,19 +335,20 @@ def decay_after_landfall(lat_landfall, lon_landfall, latlijst, lonlijst, p, coef
     pressure_decay.append(p)
     wind_decay.append(v0)
 
-    v0 = v0 / 0.5144444444
+    kt_to_ms = 0.5144444444
+    v0 = v0 / kt_to_ms
     D0 = 1.0
     v = v0
     t = 3
     j = 1
     pres_landfall = p
 
-    while v > 35 and j < len(latlijst):
+    while v * kt_to_ms > TS_THRESHOLD_MS and j < len(latlijst):
         try:
             D = haversine(lat_landfall, lon_landfall, latlijst[j], lonlijst[j])
             if D == 0.0:
                 pressure_decay.append(pres_landfall)
-                wind_decay.append(v0 * 0.5144444)
+                wind_decay.append(v0 * kt_to_ms)
                 j = j + 1
                 t = t + 3
             if D > 1:
@@ -354,12 +356,12 @@ def decay_after_landfall(lat_landfall, lon_landfall, latlijst, lonlijst, p, coef
                 b_KM = D1 * t * (t0 - t)
                 C_KM = M * np.log(D / D0) + b_KM
                 v = vb + (R * v0 - vb) * np.exp(-alpha * t) - C_KM
-                if v * 0.51444 < 18.0:
+                if v * kt_to_ms < TS_THRESHOLD_MS:
                     return pressure_decay, wind_decay
-                pres_landfall = Calculate_Pressure(v * 0.514444, Penv, coef)
+                pres_landfall = Calculate_Pressure(v * kt_to_ms, Penv, coef)
                 pres_landfall = round(pres_landfall, 1)
                 pressure_decay.append(pres_landfall)
-                wind_decay.append(v * 0.514444)
+                wind_decay.append(v * kt_to_ms)
                 t = t + 3
                 j = j + 1
             else:
@@ -557,7 +559,7 @@ def TC_pressure(
 
     intlist = [5, 3, 2, 5, 5, 5]
     int_thres = intlist[idx]
-    wind_threshold = 18.0
+    wind_threshold = TS_THRESHOLD_MS
 
     for storm_number, month, latfull, lonfull, landfallfull in zip(
         range(0, int(storms)), monthlist, latlist, lonlist, landfalllist
