@@ -71,7 +71,14 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from POST_PROCESSING.utils.climada_utils import from_simulations_storm_mod
-
+from CODE.siena_utils import (
+    TS_THRESHOLD_MS,
+    C1_THRESHOLD_MS,
+    C2_THRESHOLD_MS,
+    C3_THRESHOLD_MS,
+    C4_THRESHOLD_MS,
+    C5_THRESHOLD_MS,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -103,12 +110,12 @@ BASIN_BOUNDS = {
 
 # Saffir-Simpson thresholds (10-min sustained, m/s)
 SS_THRESHOLDS_MS = {
-    "TS": 18.0,
-    "Cat1": 33.0,  # ~64 kn  (10-min ≈ 29 kn, but STORM uses 10-min conversion)
-    "Cat2": 43.0,
-    "Cat3": 50.0,
-    "Cat4": 58.0,
-    "Cat5": 70.0,
+    "TS": TS_THRESHOLD_MS,
+    "Cat1": C1_THRESHOLD_MS,  # ~64 kn  (10-min ≈ 29 kn, but STORM uses 10-min conversion)
+    "Cat2": C2_THRESHOLD_MS,
+    "Cat3": C3_THRESHOLD_MS,
+    "Cat4": C4_THRESHOLD_MS,
+    "Cat5": C5_THRESHOLD_MS,
 }
 
 # Default coastal cities (Table 3 of whitepaper)
