@@ -41,6 +41,14 @@ import os
 import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from CODE.siena_utils import (
+    TS_THRESHOLD_MS,
+    C1_THRESHOLD_MS,
+    C2_THRESHOLD_MS,
+    C3_THRESHOLD_MS,
+    C4_THRESHOLD_MS,
+    C5_THRESHOLD_MS,
+)
 
 import numpy as np
 import pandas as pd
@@ -90,10 +98,17 @@ KN_TO_MS = 0.5144  # knots → m/s (no averaging period change)
 NM_TO_KM = 1.852  # nautical miles → km
 
 # Saffir-Simpson thresholds in 10-min m/s (matching STORM convention)
-SS_THRESHOLDS = [18.0, 33.0, 43.0, 50.0, 58.0, 70.0]
+SS_THRESHOLDS = [
+    TS_THRESHOLD_MS,
+    C1_THRESHOLD_MS,
+    C2_THRESHOLD_MS,
+    C3_THRESHOLD_MS,
+    C4_THRESHOLD_MS,
+    C5_THRESHOLD_MS,
+]
 
 # Minimum wind to keep a storm (10-min m/s) — tropical storm threshold
-MIN_WIND_MS = 18.0
+MIN_WIND_MS = TS_THRESHOLD_MS
 
 # Default RMAX when missing (km)
 DEFAULT_RMAX_KM = 50.0
