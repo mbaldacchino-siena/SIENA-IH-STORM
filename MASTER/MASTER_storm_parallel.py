@@ -28,7 +28,8 @@ from functools import partial
 __location__ = os.path.realpath(os.getcwd())
 dir_path = __location__
 
-def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=None):
+
+def _run_single_job_historical(job, years_per_loop, use_yearly=True):
     """
     Worker function: generates one loop of synthetic storms.
     Called in a separate process -- must import everything locally
@@ -44,7 +45,7 @@ def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=N
     random.seed(seed_base)
 
     # ---- Local imports (required for multiprocessing) ----
-    from CODE.SELECT_BASIN import Basins_WMO, Basins_WMO_forecast
+    from CODE.SELECT_BASIN import Basins_WMO
     from CODE.SAMPLE_STARTING_POINT import Startingpoint
     from CODE.SAMPLE_TC_MOVEMENT import TC_movement
     from CODE.SAMPLE_TC_PRESSURE import TC_pressure
@@ -62,6 +63,7 @@ def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=N
     # random genesis months — incomplete and non-reproducible).
     # Read from input.dat to stay in sync with preprocessing.
     import CODE.import_data as import_data
+
     _BASIN_NAMES = ["EP", "NA", "NI", "SI", "SP", "WP"]
     _input = import_data.input_data("input.dat")
     _months_all = _input[4]  # months is the 5th return value
@@ -69,32 +71,6 @@ def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=N
     active_months = _months_all[_basin_idx]
 
     # ---- Forecast mode setup ----
-    forecast_cfg = None
-    month_phases = None
-    poisson_phase_rate = None
-    genesis_months_phase = None
-
-    if forecast_config_path is not None:
-        from FORECAST.forecast_config import (
-            load_forecast_config,
-            build_forecast_env_years,
-            get_month_phases,
-        )
-
-        forecast_cfg = load_forecast_config(os.path.join(__location__,forecast_config_path))
-        month_phases = get_month_phases(forecast_cfg, active_months)
-
-        # Load phase-specific genesis parameters
-        poisson_phase_rate = np.load(
-            os.path.join(__location__, "POISSON_GENESIS_PARAMETERS_PHASE.npy"),
-            allow_pickle=True,
-        ).item()
-        genesis_months_phase = np.load(
-            os.path.join(__location__, "GENESIS_MONTHS_PHASE.npy"),
-            allow_pickle=True,
-        ).item()
-
-
 
     pid = os.getpid()
     print(
@@ -105,36 +81,151 @@ def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=N
 
     TC_data = []
     for year in range(years_per_loop):
+        # ── ORIGINAL MODE ──
+        storms_per_year, genesis_month, lat0, lat1, lon0, lon1 = Basins_WMO(
+            basin, phase=phase
+        )
 
-        if forecast_cfg is not None:
-            # ── FORECAST MODE ──
-            # Blended genesis: single Poisson + multinomial across months
-            storms_per_year, genesis_month, lat0, lat1, lon0, lon1 = (
-                Basins_WMO_forecast(
-                    basin,
-                    month_phases,
-                    poisson_phase_rate=poisson_phase_rate,
-                    genesis_months_phase=genesis_months_phase,
-                    active_months=active_months,
-                )
+        # ── Draw historical years per month for this simulated year ──
+        env_years = None
+        if env_pool is not None:
+            env_years = draw_env_years_for_season(env_pool, phase, active_months)
+
+    if storms_per_year > 0:
+        lon_genesis_list, lat_genesis_list = Startingpoint(
+            storms_per_year, genesis_month, basin, phase=phase
+        )
+        latlist, lonlist, landfalllist = TC_movement(
+            lon_genesis_list,
+            lat_genesis_list,
+            basin,
+            phase=phase,
+            monthlist=genesis_month,
+            env_years=env_years,
+        )
+        TC_data = TC_pressure(
+            basin,
+            latlist,
+            lonlist,
+            landfalllist,
+            year,
+            storms_per_year,
+            genesis_month,
+            TC_data,
+            phase=phase,
+            env_years=env_years,
+        )
+
+    TC_data = np.array(TC_data)
+    # ── Output filename includes forecast tag ──
+    out = f"STORM_DATA_IBTRACS_{basin}_{phase}_{years_per_loop}_YEARS_{loop_idx}.txt"
+    outpath = os.path.join(__location__, out)
+    if len(TC_data) > 0:
+        TC_data = np.nan_to_num(TC_data, nan=0.0)
+        np.savetxt(outpath, TC_data, fmt="%5s", delimiter=",")
+
+    elapsed = time.time() - t0
+    n_storms = len(np.unique(TC_data[:, 2])) if len(TC_data) > 0 else 0
+    print(
+        f"[PID {pid}] Done: {basin}/{phase}/loop{loop_idx} -> "
+        f"{n_storms} storms in {elapsed:.0f}s -> {out}"
+    )
+    return outpath
+
+
+def _run_single_job_forecast(
+    job,
+    years_per_loop,
+    use_yearly=True,
+):
+    """
+    Worker function: generates one loop of synthetic storms.
+    Called in a separate process -- must import everything locally
+    to avoid pickling issues.
+    """
+    member, basin, phase, loop_idx = job
+
+    # ---- Each worker gets a unique random seed ----
+    seed_base = hash((member, basin, phase, loop_idx)) % (2**31)
+    np.random.seed(seed_base)
+    import random
+    import re
+
+    random.seed(seed_base)
+
+    # ---- Local imports (required for multiprocessing) ----
+    from CODE.SELECT_BASIN import Basins_WMO, Basins_WMO_forecast
+    from CODE.SAMPLE_STARTING_POINT import Startingpoint
+    from CODE.SAMPLE_TC_MOVEMENT import TC_movement
+    from CODE.SAMPLE_TC_PRESSURE import TC_pressure
+    from CODE.siena_utils import load_env_pool, draw_env_years_for_season
+    from FORECAST.forecast_config import (
+        load_forecast_config,
+        build_forecast_env_years,
+        get_month_phases,
+    )
+
+    # ---- Load year pool (tiny JSON, fast) ----
+    env_pool = None
+    if use_yearly:
+        env_pool = load_env_pool(__location__)
+        if not env_pool:
+            env_pool = None
+
+    # ── Deterministic active-season months per basin ──
+    # Must NOT come from Basins_WMO (which draws a random Poisson count and
+    # random genesis months — incomplete and non-reproducible).
+    # Read from input.dat to stay in sync with preprocessing.
+    import CODE.import_data as import_data
+
+    _BASIN_NAMES = ["EP", "NA", "NI", "SI", "SP", "WP"]
+    _input = import_data.input_data("input.dat")
+    _months_all = _input[4]  # months is the 5th return value
+    _basin_idx = _BASIN_NAMES.index(basin)
+    active_months = _months_all[_basin_idx]
+
+    # ---- Forecast mode setup ----
+    forecast_cfg = load_forecast_config(os.path.join(__location__, member))
+    month_phases = get_month_phases(forecast_cfg, active_months)
+    member_num = forecast_cfg.get("ensemble_member", 0)
+
+    # Load phase-specific genesis parameters
+    poisson_phase_rate = np.load(
+        os.path.join(__location__, "POISSON_GENESIS_PARAMETERS_PHASE.npy"),
+        allow_pickle=True,
+    ).item()
+    genesis_months_phase = np.load(
+        os.path.join(__location__, "GENESIS_MONTHS_PHASE.npy"),
+        allow_pickle=True,
+    ).item()
+
+
+    pid = os.getpid()
+    print(
+        f"[PID {pid}] Starting: member={member_num} basin={basin} phase={phase} loop={loop_idx} ({years_per_loop} years)"
+        f"{' [year resampling]' if env_pool else ''}"
+    )
+    t0 = time.time()
+
+    TC_data = []
+    for year in range(years_per_loop):
+        # ── FORECAST MODE ──
+        # Blended genesis: single Poisson + multinomial across months
+        storms_per_year, genesis_month, lat0, lat1, lon0, lon1 = (
+            Basins_WMO_forecast(
+                basin,
+                month_phases,
+                poisson_phase_rate=poisson_phase_rate,
+                genesis_months_phase=genesis_months_phase,
+                active_months=active_months,
             )
+        )
 
-            # Build env_years from forecast config
-            # "historical" months get a fresh resample each synthetic year
-            env_years = build_forecast_env_years(
-                forecast_cfg, env_pool or {}, active_months
-            )
-
-        else:
-            # ── ORIGINAL MODE ──
-            storms_per_year, genesis_month, lat0, lat1, lon0, lon1 = Basins_WMO(
-                basin, phase=phase
-            )
-
-            # ── Draw historical years per month for this simulated year ──
-            env_years = None
-            if env_pool is not None:
-                env_years = draw_env_years_for_season(env_pool, phase, active_months)
+        # Build env_years from forecast config
+        # "historical" months get a fresh resample each synthetic year
+        env_years = build_forecast_env_years(
+            forecast_cfg, env_pool or {}, active_months
+        )
 
         if storms_per_year > 0:
             lon_genesis_list, lat_genesis_list = Startingpoint(
@@ -163,14 +254,10 @@ def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=N
 
     TC_data = np.array(TC_data)
     # ── Output filename includes forecast tag ──
-    if forecast_cfg is not None:
-        member = forecast_cfg.get("ensemble_member", 0)
-        out = (
-            f"STORM_DATA_IBTRACS_{basin}_FORECAST_m{member}"
-            f"_{years_per_loop}_YEARS_{loop_idx}.txt"
-        )
-    else:
-        out = f"STORM_DATA_IBTRACS_{basin}_{phase}_{years_per_loop}_YEARS_{loop_idx}.txt"
+    out = (
+        f"STORM_DATA_IBTRACS_{basin}_FORECAST_m{member_num}"
+        f"_{years_per_loop}_YEARS_{loop_idx}.txt"
+    )
     outpath = os.path.join(__location__, out)
     if len(TC_data) > 0:
         TC_data = np.nan_to_num(TC_data, nan=0.0)
@@ -179,7 +266,7 @@ def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=N
     elapsed = time.time() - t0
     n_storms = len(np.unique(TC_data[:, 2])) if len(TC_data) > 0 else 0
     print(
-        f"[PID {pid}] Done: {basin}/{phase}/loop{loop_idx} -> "
+        f"[PID {pid}] Done: {member_num}/{basin}/{phase}/loop{loop_idx} -> "
         f"{n_storms} storms in {elapsed:.0f}s -> {out}"
     )
     return outpath
@@ -224,7 +311,7 @@ def main():
 
     parser.add_argument(
         "--forecast",
-        type=str,
+        type=list[str],
         default=None,
         help="Path to forecast_config.json. Enables seasonal forecast mode. "
         "When set, --phase is ignored (phases come from the config).",
@@ -232,9 +319,9 @@ def main():
 
     args = parser.parse_args()
 
-
     # ── Forecast mode: override phase handling ──
-    if args.forecast is not None:
+    forecast_mode = args.forecast is not None
+    if forecast_mode:
         # In forecast mode, phase is not used for genesis — month_phases
         # from the config drive everything. We still run ONE phase label
         # for output naming. Use "FCST" as a pseudo-phase.
@@ -246,36 +333,57 @@ def main():
 
     # Build job list: all (basin, phase, loop_idx) combinations
     jobs = []
-    for basin in args.basins:
-        for phase in phases:
-            for loop_idx in range(args.loop):
-                jobs.append((basin, phase, loop_idx))
+    if not forecast_mode:  # GENERATOR FOR BASIC USE
+        for basin in args.basins:
+            for phase in phases:
+                for loop_idx in range(args.loop):
+                    jobs.append((basin, phase, loop_idx))
 
-    n_workers = args.workers or min(len(jobs), mp.cpu_count())
-    total_years = args.years * args.loop * len(phases) * len(args.basins)
+        n_workers = args.workers or min(len(jobs), mp.cpu_count())
+        total_years = args.years * args.loop * len(phases) * len(args.basins)
+    else:  # GENERATOR FOR FORECAST USING SEAS5
+        for member in args.forecast:
+            for basin in args.basins:
+                for phase in phases:
+                    for loop_idx in range(args.loop):
+                        jobs.append((member, basin, phase, loop_idx))
+
+        n_workers = args.workers or min(len(jobs), mp.cpu_count())
+        total_years = (
+            args.years * args.loop * len(phases) * len(args.basins) * len(args.forecast)
+        )
 
     print("=" * 70)
     print("SIENA-IH-STORM Parallel Generation")
     print("=" * 70)
+    if forecast_mode:
+        print("FORECAST MODE")
+        print(f"SEAS5 members: {len(args.forecast)}")
     print(f"Basins:      {args.basins}")
-    print(f"Phases:      {phases}")
-    print(f"Years/loop:  {args.years}")
-    print(f"Loops:       {args.loop}")
-    print(f"Total jobs:  {len(jobs)}")
-    print(f"Total years: {total_years:,}")
-    print(f"Workers:     {n_workers}")
-    print(f"Year resamp: {'disabled' if args.no_yearly else 'enabled'}")
+    print(f"Phases:        {phases}")
+    print(f"Years/loop:    {args.years}")
+    print(f"Loops:         {args.loop}")
+    print(f"Total jobs:    {len(jobs)}")
+    print(f"Total years:   {total_years:,}")
+    print(f"Workers:       {n_workers}")
+    print(f"Year resamp:   {'disabled' if args.no_yearly else 'enabled'}")
     print("=" * 70)
 
     start_time = time.time()
 
     # ---- Run in parallel ----
-    worker_fn = partial(
-        _run_single_job,
-        years_per_loop=args.years,
-        use_yearly=not args.no_yearly,
-        forecast_config_path=args.forecast,
-    )
+    if forecast_mode:
+        worker_fn = partial(
+            _run_single_job_forecast,
+            years_per_loop=args.years,
+            use_yearly=not args.no_yearly,
+        )
+    else:
+        worker_fn = partial(
+            _run_single_job_historical,
+            years_per_loop=args.years,
+            use_yearly=not args.no_yearly,
+        )
 
     if n_workers == 1:
         # Sequential mode (useful for debugging)
