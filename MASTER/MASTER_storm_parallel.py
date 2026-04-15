@@ -25,7 +25,7 @@ import multiprocessing as mp
 from functools import partial
 
 
-__location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
+__location__ = os.path.realpath(os.getcwd())
 dir_path = __location__
 
 def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=None):
@@ -81,7 +81,7 @@ def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=N
             get_month_phases,
         )
 
-        forecast_cfg = load_forecast_config(forecast_config_path)
+        forecast_cfg = load_forecast_config(os.path.join(__location__,forecast_config_path))
         month_phases = get_month_phases(forecast_cfg, active_months)
 
         # Load phase-specific genesis parameters
@@ -173,6 +173,7 @@ def _run_single_job(job, years_per_loop, use_yearly=True, forecast_config_path=N
         out = f"STORM_DATA_IBTRACS_{basin}_{phase}_{years_per_loop}_YEARS_{loop_idx}.txt"
     outpath = os.path.join(__location__, out)
     if len(TC_data) > 0:
+        TC_data = np.nan_to_num(TC_data, nan=0.0)
         np.savetxt(outpath, TC_data, fmt="%5s", delimiter=",")
 
     elapsed = time.time() - t0
