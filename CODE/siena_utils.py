@@ -5,7 +5,11 @@ import pandas as pd
 PHASE_TO_CODE = {"LN": 0, "NEU": 1, "EN": 2}
 CODE_TO_PHASE = {v: k for k, v in PHASE_TO_CODE.items()}
 TS_THRESHOLD_MS = 18.0 * 0.88 # ~ 15.84 m/s (~34 kt 1-min after 0.88 conv)
-
+C1_THRESHOLD_MS = 33* 0.88
+C2_THRESHOLD_MS = 43*0.88
+C3_THRESHOLD_MS = 50*0.88
+C4_THRESHOLD_MS = 58*0.88
+C5_THRESHOLD_MS = 70*0.88
 
 def normalize_phase(phase):
     if phase is None:
