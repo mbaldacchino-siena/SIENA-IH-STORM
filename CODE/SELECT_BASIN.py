@@ -87,7 +87,7 @@ def Basins_WMO_forecast(
     -------
     Same as Basins_WMO: (storms, month_list, lat0, lat1, lon0, lon1)
     """
-    from siena_utils import blended_genesis
+    from CODE.siena_utils import blended_genesis
 
     basins = ["EP", "NA", "NI", "SI", "SP", "WP"]
     idx = basins.index(basin)
