@@ -48,6 +48,18 @@ def _build_weighted_index(grid_copy, round_coeff=4):
                 weighted_list_index.extend([i * (ncols) + j] * value)
     return weighted_list_index, grid_copy
 
+_LAND_MASK_CACHE_SP = {}
+
+
+def _get_land_mask_sp(basin):
+    if basin not in _LAND_MASK_CACHE_SP:
+        _LAND_MASK_CACHE_SP[basin] = np.loadtxt(
+            os.path.join(
+                dir_path, "Land_ocean_masks/Land_ocean_mask_" + str(basin) + ".txt"
+            )
+        )
+    return _LAND_MASK_CACHE_SP[basin]
+
 
 def Startingpoint(no_storms, monthlist, basin, phase=None, month_phases=None):
     phase = normalize_phase(phase)
@@ -57,9 +69,7 @@ def Startingpoint(no_storms, monthlist, basin, phase=None, month_phases=None):
     lon_coordinates = []
     lat_coordinates = []
     s, monthdummy, lat0, lat1, lon0, lon1 = Basins_WMO(basin, phase=phase)
-    land_mask = np.loadtxt(
-        os.path.join(dir_path, "Land_ocean_masks/Land_ocean_mask_" + str(basin) + ".txt")
-    )
+    land_mask = _get_land_mask_sp(basin)
 
     for month in monthlist:
 
