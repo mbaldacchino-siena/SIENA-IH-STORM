@@ -18,6 +18,7 @@ from datetime import date, timedelta
 from scipy import stats
 import os
 import sys
+from CODE.siena_utils import TS_THRESHOLD_MS
 
 
 __location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
@@ -220,10 +221,10 @@ def extract_data(data, final_year):
 
                 if (
                     np.all(np.isnan(wind_conv)) == False
-                    and np.nanmax(wind_conv) >= 18.0
+                    and np.nanmax(wind_conv) >= TS_THRESHOLD_MS
                 ):
                     """We consider the timesteps between the first and the last moment of maximum wind speed > 18 m/s (equal to a tropical storm)"""
-                    ind = [x for x, v in enumerate(wind_conv) if v >= 18.0]
+                    ind = [x for x, v in enumerate(wind_conv) if v >= TS_THRESHOLD_MS]
                     nature_list = [x.decode("utf-8") for x in nature[i]]
 
                     if "ET" in nature_list:
