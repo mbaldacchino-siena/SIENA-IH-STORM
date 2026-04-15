@@ -34,22 +34,37 @@ _BASIN_BOUNDS = {
 }
 
 # ── VWS field cache (loaded once per (month, phase, year), reused across storms) ──
-_VWS_CACHE = {}
+# MEMORY FIX: LRU-bounded cache. Same rationale as _FIELD_CACHE in
+# SAMPLE_TC_PRESSURE — unbounded dict grows to ~2 GB per worker with year
+# resampling.  Cap at 16 entries ≈ 133 MB (only 1 stem here, not 4).
+from collections import OrderedDict
+
+_VWS_CACHE = OrderedDict()
+_VWS_CACHE_MAXSIZE = 16
 
 
 def _load_vws_cached(month, phase=None, env_year=None):
     """Load a monthly VWS field, caching the result.
     If env_year is set, load the year-specific field (with phase-mean fallback).
+    Evicts least-recently-used entries when cache exceeds _VWS_CACHE_MAXSIZE.
     """
     key = (month, normalize_phase(phase), env_year)
-    if key not in _VWS_CACHE:
-        try:
-            _VWS_CACHE[key] = load_field_with_year_fallback(
-                dir_path, "VWS", month, phase=phase, env_year=env_year
-            )
-        except Exception:
-            _VWS_CACHE[key] = None
-    return _VWS_CACHE[key]
+    if key in _VWS_CACHE:
+        _VWS_CACHE.move_to_end(key)
+        return _VWS_CACHE[key]
+
+    try:
+        val = load_field_with_year_fallback(
+            dir_path, "VWS", month, phase=phase, env_year=env_year
+        )
+    except Exception:
+        val = None
+
+    _VWS_CACHE[key] = val
+    while len(_VWS_CACHE) > _VWS_CACHE_MAXSIZE:
+        _VWS_CACHE.popitem(last=False)
+
+    return val
 
 
 # ── O(1) grid index lookups (same as SAMPLE_TC_PRESSURE) ──
@@ -78,6 +93,41 @@ def _get_vws_at_point(vws_field, lat, lon):
         val = float(vws_field[lat_idx, lon_idx])
         return val if np.isfinite(val) else 0.0
     return 0.0
+
+
+# ==========================================================================
+# MODULE-LEVEL CACHES for heavy files reloaded every simulated year
+# ==========================================================================
+# TRACK_COEFFICIENTS.npy and Land_ocean_mask_*.txt were loaded inside
+# TC_movement, which runs once per simulated year.  For 1,000 years that
+# means 1,000 × np.load + 1,000 × np.loadtxt (the latter parses 10-17 MB
+# of text each time).  Now loaded once per process and reused.
+
+_TRACK_COEFF_CACHE = None  # dict from np.load().item()
+_LAND_MASK_CACHE = {}  # {basin_str: ndarray}
+
+
+def _get_track_coefficients():
+    """Load TRACK_COEFFICIENTS.npy once per process."""
+    global _TRACK_COEFF_CACHE
+    if _TRACK_COEFF_CACHE is None:
+        _TRACK_COEFF_CACHE = np.load(
+            os.path.join(__location__, "TRACK_COEFFICIENTS.npy"),
+            allow_pickle=True,
+            encoding="latin1",
+        ).item()
+    return _TRACK_COEFF_CACHE
+
+
+def _get_land_mask(basin):
+    """Load Land_ocean_mask_<basin>.txt once per (process, basin)."""
+    if basin not in _LAND_MASK_CACHE:
+        _LAND_MASK_CACHE[basin] = np.loadtxt(
+            os.path.join(
+                __location__, "Land_ocean_masks/Land_ocean_mask_" + str(basin) + ".txt"
+            )
+        )
+    return _LAND_MASK_CACHE[basin]
 
 
 def find_lat_index_bins(basin, lat):
@@ -121,16 +171,8 @@ def TC_movement(
     basins = ["EP", "NA", "NI", "SI", "SP", "WP"]
     basin_name = dict(zip(basins, [0, 1, 2, 3, 4, 5]))
     idx = basin_name[basin]
-    constants_all = np.load(
-        os.path.join(__location__, "TRACK_COEFFICIENTS.npy"),
-        allow_pickle=True,
-        encoding="latin1",
-    ).item()
-    land_mask = np.loadtxt(
-        os.path.join(
-            __location__, "Land_ocean_masks/Land_ocean_mask_" + str(basin) + ".txt"
-        )
-    )
+    constants_all = _get_track_coefficients()  # was: np.load(...) every call
+    land_mask = _get_land_mask(basin)  # was: np.loadtxt(...) every call
     constants = constants_all[idx]
     lat0, lat1, lon0, lon1 = _BASIN_BOUNDS[basin]
     latall = []
