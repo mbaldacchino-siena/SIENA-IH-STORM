@@ -66,7 +66,7 @@ try:
 except ImportError:
     HAS_TCPYPI = False
 
-from CODE.siena_utils import save_yearly_field, _env_yearly_dir
+from CODE.siena_utils import save_yearly_field, _env_yearly_dir, compute_relative_vorticity_spherical
 
 __location__ = os.path.realpath(os.getcwd())
 
@@ -320,6 +320,7 @@ def process_member(
         # Derived
         vws = compute_vws(u200, u850, v200, v850)
         rh600 = compute_rh_from_q_t(q600, t600, pressure_pa=60000.0)
+        vort850 = compute_relative_vorticity_spherical(u850, v850, dst_lats, dst_lons)
 
         # Thermodynamic PI
         if HAS_TCPYPI:
@@ -332,7 +333,7 @@ def process_member(
                 sst_native = _coarsen_to_match(sst_native, native_shape)
                 mslp_native = _coarsen_to_match(mslp_native, native_shape)
 
-            pmin, _ = compute_pi_field_tcpyPI(
+            pmin, vmax = compute_pi_field_tcpyPI(
                 sst_native,
                 mslp_native,
                 t_profile,
@@ -340,10 +341,13 @@ def process_member(
                 p_levels,
             )
             pmin = _nanfill_nearest(pmin)
+            vmax = _nanfill_nearest(vmax)
             if pmin.shape != fine_shape:
                 pmin = _upscale_to_target(pmin, fine_shape)
+            if vmax.shape != fine_shape:
+                vmax = _upscale_to_target(vmax, fine_shape)
         else:
-            pmin, _ = compute_pi_field_simplified(sst, mslp)
+            pmin, vmax = compute_pi_field_simplified(sst, mslp)
 
         # Save
         save_yearly_field(__location__, "VWS", env_year, valid_month, vws)
@@ -351,6 +355,8 @@ def process_member(
         save_yearly_field(__location__, "MSLP", env_year, valid_month, mslp)
         save_yearly_field(__location__, "SST", env_year, valid_month, sst)
         save_yearly_field(__location__, "PI", env_year, valid_month, pmin)
+        save_yearly_field(__location__, "VMAX_PI", env_year, valid_month, vmax)
+        save_yearly_field(__location__, "VORT850", env_year, valid_month, vort850)
 
         print(f"    month {valid_month} (lead {t_idx + 1}) saved")
 
