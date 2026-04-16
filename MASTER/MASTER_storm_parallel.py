@@ -91,30 +91,30 @@ def _run_single_job_historical(job, years_per_loop, use_yearly=True):
         if env_pool is not None:
             env_years = draw_env_years_for_season(env_pool, phase, active_months)
 
-    if storms_per_year > 0:
-        lon_genesis_list, lat_genesis_list = Startingpoint(
-            storms_per_year, genesis_month, basin, phase=phase
-        )
-        latlist, lonlist, landfalllist = TC_movement(
-            lon_genesis_list,
-            lat_genesis_list,
-            basin,
-            phase=phase,
-            monthlist=genesis_month,
-            env_years=env_years,
-        )
-        TC_data = TC_pressure(
-            basin,
-            latlist,
-            lonlist,
-            landfalllist,
-            year,
-            storms_per_year,
-            genesis_month,
-            TC_data,
-            phase=phase,
-            env_years=env_years,
-        )
+        if storms_per_year > 0:
+            lon_genesis_list, lat_genesis_list = Startingpoint(
+                storms_per_year, genesis_month, basin, phase=phase, env_years=env_years
+            )
+            latlist, lonlist, landfalllist = TC_movement(
+                lon_genesis_list,
+                lat_genesis_list,
+                basin,
+                phase=phase,
+                monthlist=genesis_month,
+                env_years=env_years,
+            )
+            TC_data = TC_pressure(
+                basin,
+                latlist,
+                lonlist,
+                landfalllist,
+                year,
+                storms_per_year,
+                genesis_month,
+                TC_data,
+                phase=phase,
+                env_years=env_years,
+            )
 
     TC_data = np.array(TC_data)
     # ── Output filename includes forecast tag ──
@@ -199,7 +199,6 @@ def _run_single_job_forecast(
         allow_pickle=True,
     ).item()
 
-
     pid = os.getpid()
     print(
         f"[PID {pid}] Starting: member={member_num} basin={basin} phase={phase} loop={loop_idx} ({years_per_loop} years)"
@@ -211,14 +210,12 @@ def _run_single_job_forecast(
     for year in range(years_per_loop):
         # ── FORECAST MODE ──
         # Blended genesis: single Poisson + multinomial across months
-        storms_per_year, genesis_month, lat0, lat1, lon0, lon1 = (
-            Basins_WMO_forecast(
-                basin,
-                month_phases,
-                poisson_phase_rate=poisson_phase_rate,
-                genesis_months_phase=genesis_months_phase,
-                active_months=active_months,
-            )
+        storms_per_year, genesis_month, lat0, lat1, lon0, lon1 = Basins_WMO_forecast(
+            basin,
+            month_phases,
+            poisson_phase_rate=poisson_phase_rate,
+            genesis_months_phase=genesis_months_phase,
+            active_months=active_months,
         )
 
         # Build env_years from forecast config
@@ -229,7 +226,12 @@ def _run_single_job_forecast(
 
         if storms_per_year > 0:
             lon_genesis_list, lat_genesis_list = Startingpoint(
-                storms_per_year, genesis_month, basin, phase=phase
+                storms_per_year,
+                genesis_month,
+                basin,
+                phase=phase,
+                month_phases=month_phases,
+                env_years=env_years,
             )
             latlist, lonlist, landfalllist = TC_movement(
                 lon_genesis_list,
@@ -237,6 +239,7 @@ def _run_single_job_forecast(
                 basin,
                 phase=phase,
                 monthlist=genesis_month,
+                month_phases=month_phases,
                 env_years=env_years,
             )
             TC_data = TC_pressure(
@@ -249,6 +252,7 @@ def _run_single_job_forecast(
                 genesis_month,
                 TC_data,
                 phase=phase,
+                month_phases=month_phases,
                 env_years=env_years,
             )
 
