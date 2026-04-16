@@ -523,11 +523,11 @@ def TC_pressure(
     monthlist,
     TC_data,
     phase=None,
+    month_phases=None,
     env_years=None,
 ):
     """
     Calculate TC pressure along synthetic tracks.
-    Logic is identical to the original; only I/O is cached.
 
     Parameters
     ----------
@@ -540,7 +540,7 @@ def TC_pressure(
     lat0, lat1, lon0, lon1 = _BASIN_BOUNDS[basin]
 
     phase = normalize_phase(phase)
-    ph_code = phase_code(phase) if phase is not None else 1
+    #ph_code = phase_code(phase) if phase is not None else 1
 
     # These .npy files are small and loaded once per TC_pressure call
     # (once per year). Acceptable cost — not the bottleneck.
@@ -580,17 +580,22 @@ def TC_pressure(
         # Original called np.loadtxt per storm — now each unique
         # (stem, month, phase, env_year) is parsed once and reused.
         env_year = env_years.get(month) if env_years else None
+        effective_phase = phase
+        if month_phases is not None and month in month_phases:
+            effective_phase = normalize_phase(month_phases[month])
+        ph_code = phase_code(effective_phase) if effective_phase is not None else 1
+
         Penv_field = _load_field_cached(
-            "Monthly_mean_MSLP", month, phase=phase, env_year=env_year
+            "Monthly_mean_MSLP", month, phase=effective_phase, env_year=env_year
         )
         PI_field = _load_field_cached(
-            "Monthly_mean_PI", month, phase=phase, env_year=env_year
+            "Monthly_mean_PI", month, phase=effective_phase, env_year=env_year
         )
         VWS_field = _load_field_cached(
-            "Monthly_mean_VWS", month, phase=phase, env_year=env_year
+            "Monthly_mean_VWS", month, phase=effective_phase, env_year=env_year
         )
         RH_field = _load_field_cached(
-            "Monthly_mean_RH600", month, phase=phase, env_year=env_year
+            "Monthly_mean_RH600", month, phase=effective_phase, env_year=env_year
         )
 
         constants_pressure = JM_pressure[idx][month]
