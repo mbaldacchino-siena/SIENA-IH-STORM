@@ -4,7 +4,6 @@
 import numpy as np
 import random
 import os
-import sys
 from CODE.SELECT_BASIN import Basins_WMO
 from CODE.siena_utils import normalize_phase
 from CODE.genesis_matrix import _blend_genesis_with_env, compute_gpi_field
