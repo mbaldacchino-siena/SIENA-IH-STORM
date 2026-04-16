@@ -14,7 +14,7 @@ from shapely.prepared import prep
 import pandas as pd
 from scipy.interpolate import griddata
 import matplotlib.pyplot as plt
-from CODE.siena_utils import load_monthly_field
+from CODE.siena_utils import load_monthly_field, load_field_with_year_fallback
 from scipy.ndimage import zoom
 
 
@@ -462,6 +462,14 @@ def Change_genesis_locations(idx_basin, months, genesis_weighting):
 
             matrix_dict = create_5deg_grid(locations[idx], month, basin)
             genesis_grids = create_1deg_grid(matrix_dict, basin, month)
+            genesis_empirical = np.array(genesis_grids, copy=True)
+
+            np.savetxt(
+                os.path.join(__location__,
+                             "GRID_GENESIS_EMPIRICAL_MATRIX_{}_{}.txt".format(idx, month),
+                ),
+                genesis_empirical,              
+            )
 
             if genesis_mode == "GPI-MIX":
                 env_weight = compute_gpi_field(basin, month, phase=None)
@@ -530,6 +538,16 @@ def Change_genesis_locations(idx_basin, months, genesis_weighting):
                         genesis_phase = create_1deg_grid(
                             matrix_dict_phase, basin, month
                         )
+                        genesis_phase_empirical = np.array(genesis_phase, copy=True)
+                        np.savetxt(
+                            os.path.join(
+                                __location__,
+                                "GRID_GENESIS_EMPIRICAL_MATRIX_{}_{}_{}.txt".format(
+                                    idx, month, phase
+                                ),
+                            ),
+                            genesis_phase_empirical,
+                        )
 
                         # Load phase-specific environmental weighting
                         env_phase = None
@@ -576,7 +594,7 @@ def Change_genesis_locations(idx_basin, months, genesis_weighting):
 ##########################
 
 
-def compute_gpi_field(basin, month, phase=None):
+def compute_gpi_field(basin, month, phase=None, env_year=None):
     """
         Compute the Genesis Potential Index following Emanuel & Nolan (2004)
         and Camargo et al. (2007, J. Climate, 20, 4819-4834).
@@ -605,32 +623,32 @@ def compute_gpi_field(basin, month, phase=None):
 
     # --- Load fields ---
     try:
-        vort_global = load_monthly_field(
-            __location__, "Monthly_mean_VORT850", month, phase=phase_str
+        vort_global = load_field_with_year_fallback(
+            __location__, "VORT850", month, phase=phase_str, env_year=env_year
         )
     except Exception:
         print(f"  GPI: Missing VORT850 for month={month}, phase={phase_str}")
         return None
 
     try:
-        rh_global = load_monthly_field(
-            __location__, "Monthly_mean_RH600", month, phase=phase_str
+        rh_global = load_field_with_year_fallback(
+            __location__, "RH600", month, phase=phase_str, env_year=env_year
         )
     except Exception:
         print(f"  GPI: Missing RH600 for month={month}, phase={phase_str}")
         return None
 
     try:
-        vpot_global = load_monthly_field(
-            __location__, "Monthly_mean_VMAX_PI", month, phase=phase_str
-        )
+        vpot_global = load_field_with_year_fallback(
+            __location__, "VMAX_PI", month, phase=phase_str, env_year=env_year
+        ) 
     except Exception:
         print(f"  GPI: Missing VMAX_PI for month={month}, phase={phase_str}")
         return None
 
     try:
-        vws_global = load_monthly_field(
-            __location__, "Monthly_mean_VWS", month, phase=phase_str
+        vws_global = load_field_with_year_fallback(
+            __location__, "VWS", month, phase=phase_str, env_year=env_year
         )
     except Exception:
         print(f"  GPI: Missing VWS for month={month}, phase={phase_str}")

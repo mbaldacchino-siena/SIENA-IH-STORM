@@ -148,6 +148,7 @@ def TC_movement(
     basin,
     monthlist=None,
     phase=None,
+    month_phases=None,
     env_years=None,
 ):
     """
@@ -187,7 +188,14 @@ def TC_movement(
         vws_field = None
         if storm_month is not None:
             env_year = env_years.get(storm_month) if env_years else None
-            vws_field = _load_vws_cached(storm_month, phase=phase, env_year=env_year)
+            effective_phase = phase
+            if month_phases is not None and storm_month in month_phases:
+                effective_phase = normalize_phase(month_phases[storm_month])
+            vws_field = _load_vws_cached(
+                storm_month,
+                phase=effective_phase,
+                env_year=env_year,
+            )
 
         latlijst = [lat_genesis]
         lonlijst = [lon_genesis]

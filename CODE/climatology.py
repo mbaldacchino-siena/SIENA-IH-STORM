@@ -17,7 +17,12 @@ import cdsapi
 import pandas as pd
 import numpy as np
 import CODE.potential_intensity as potential_intensity
-
+from CODE.siena_utils import (
+    save_yearly_field,
+    save_env_pool,
+    _env_yearly_dir,
+    compute_relative_vorticity_spherical,
+)
 from pathlib import Path
 
 
@@ -362,14 +367,7 @@ def _compute_and_save_vorticity(u850_path, v850_path, oni_df, out_dir):
     lat = ds_u.latitude.values  # degrees, typically 90 to -90
     lon = ds_u.longitude.values
 
-    # Grid spacing in meters
-    R = 6.371e6  # Earth radius
-    dlat = np.abs(np.mean(np.diff(lat)))  # degrees
-    dlon = np.abs(np.mean(np.diff(lon)))  # degrees
-    dy = np.deg2rad(dlat) * R  # constant
-    # dx varies with latitude
-    dx = np.deg2rad(dlon) * R * np.cos(np.deg2rad(lat))  # (nlat,)
-
+    
     # Phase lookup
     phase_lookup = {}
     for _, row in oni_df.iterrows():
@@ -392,14 +390,13 @@ def _compute_and_save_vorticity(u850_path, v850_path, oni_df, out_dir):
         u = ds_u[u_var].isel({time_dim: t_idx}).values  # (lat, lon)
         v = ds_v[v_var].isel({time_dim: t_idx}).values
 
-        # Relative vorticity: ζ = ∂v/∂x − ∂u/∂y
-        # Central differences
-        dvdx = np.gradient(v, axis=1) / dx[:, None]  # (lat, lon)
-        dudy = np.gradient(u, axis=0) / dy  # (lat, lon)
-        vort = dvdx - dudy
+        vort = compute_relative_vorticity_spherical(u,v,lat,lon)
 
         accum[mo][ph].append(vort)
         accum_pooled[mo].append(vort)
+
+        # Save year-conditioned 850-hPa relative vorticity for runtime GPI
+        save_yearly_field(out_dir, "VORT850", yr, mo, vort)
 
     ds_u.close()
     ds_v.close()
@@ -629,7 +626,6 @@ def save_yearly_env_fields(climate_df, period):
     climate_df : DataFrame with [year, month, climate_index, phase]
     period : (start_year, end_year)
     """
-    from CODE.siena_utils import save_yearly_field, save_env_pool, _env_yearly_dir
 
     local_path = os.getcwd()
     out_dir = _env_yearly_dir(local_path)
@@ -802,21 +798,25 @@ def save_yearly_env_fields(climate_df, period):
                 sst_c = potential_intensity._coarsen_to_match(sst_field, coarse_shape)
                 mslp_c = potential_intensity._coarsen_to_match(mslp_field, coarse_shape)
 
-                pmin, _ = potential_intensity.compute_pi_field_tcpyPI(
+                pmin, vmax = potential_intensity.compute_pi_field_tcpyPI(
                     sst_c, mslp_c, t_field, q_field, p_lev_hPa
                 )
                 # NaN-fill coastal cells before upscaling
                 pmin = potential_intensity._nanfill_nearest(pmin)
+                vmax = potential_intensity._nanfill_nearest(vmax)
                 # Upscale to 0.25°
                 if pmin.shape != fine_shape:
                     pmin = potential_intensity._upscale_to_target(pmin, fine_shape)
+                if vmax.shape != fine_shape:
+                    vmax = potential_intensity._upscale_to_target(vmax, fine_shape)
             else:
                 # Simplified fallback
-                pmin, _ = potential_intensity.compute_pi_field_simplified(
+                pmin, vmax = potential_intensity.compute_pi_field_simplified(
                     sst_field, mslp_field
                 )
 
             save_yearly_field(local_path, "PI", yr, mo, pmin)
+            save_yearly_field(local_path, "VMAX_PI", yr, mo, vmax)
             saved_pi += 1
             if saved_pi % 50 == 0:
                 print(f"    PI progress: {saved_pi} fields computed...")
