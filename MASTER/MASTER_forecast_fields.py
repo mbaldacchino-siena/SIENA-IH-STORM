@@ -44,6 +44,9 @@ import os
 import numpy as np
 import pandas as pd
 import xarray as xr
+import time
+import multiprocessing as mp
+from functools import partial
 from scipy.interpolate import RegularGridInterpolator
 
 try:
@@ -52,7 +55,7 @@ except ImportError:
     cdsapi = None
 
 try:
-    from potential_intensity import (
+    from CODE.potential_intensity import (
         compute_pi_field_tcpyPI,
         compute_pi_field_simplified,
         _nanfill_nearest,
@@ -63,9 +66,9 @@ try:
 except ImportError:
     HAS_TCPYPI = False
 
-from siena_utils import save_yearly_field, _env_yearly_dir
+from CODE.siena_utils import save_yearly_field, _env_yearly_dir
 
-__location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
+__location__ = os.path.realpath(os.getcwd())
 
 
 # =========================================================================
@@ -600,57 +603,41 @@ def generate_forecast_config(
     return config
 
 
-# =========================================================================
-# Main pipeline: download once, process N members
-# =========================================================================
-
-
-def process_all_members(
+def _run_single_member(
+    job,
     init_date,
     lead_months,
-    members=None,
     generate_config=False,
     active_months=None,
     oni_threshold=0.5,
-    skip_download=False,
 ):
     """
-    Full pipeline: download once -> loop over members.
+    Full pipeline: download once -> loop for one member.
 
     Parameters
     ----------
+    job : member of SEAS5 ensemble to process over
     init_date : str, "YYYY-MM-DD"
     lead_months : int
-    members : list of int or None (None = all 51)
     generate_config : bool
     active_months : list of int
     oni_threshold : float
     skip_download : bool
     """
+
     raw_dir = os.path.join(__location__, "forecast_raw")
 
-    # Step 1: Download (once)
-    if not skip_download:
-        files = download_seas5(init_date, lead_months, raw_dir)
-    else:
-        files = {
-            "pl": os.path.join(raw_dir, "seas5_pl.nc"),
-            "sfc": os.path.join(raw_dir, "seas5_sfc.nc"),
-        }
-        for k, p in files.items():
-            if not os.path.exists(p):
-                raise FileNotFoundError(
-                    f"--skip-download but {p} not found. "
-                    f"Run without --skip-download first."
-                )
+    files = {
+        "pl": os.path.join(raw_dir, "seas5_pl.nc"),
+        "sfc": os.path.join(raw_dir, "seas5_sfc.nc"),
+    }
+    for k, p in files.items():
+        if not os.path.exists(p):
+            raise FileNotFoundError(f" {p} not found. Please check.")
 
     # Open datasets (shared across all members, read-only)
     ds_pl = xr.open_dataset(files["pl"])
     ds_sfc = xr.open_dataset(files["sfc"])
-
-    n_members = int(ds_pl.sizes["number"])
-    if members is None:
-        members = list(range(n_members))
 
     # Target grid
     try:
@@ -662,45 +649,49 @@ def process_all_members(
         dst_lats = np.arange(90, -90.25, -0.25)
         dst_lons = np.arange(0, 360, 0.25)
 
-    print(f"Processing {len(members)} members, {lead_months} lead months")
+    print(f"Processing {job} member, {lead_months} lead months")
     print(f"  PI: {'tcpyPI (full thermodynamic)' if HAS_TCPYPI else 'simplified'}")
 
-    for member_idx in members:
-        env_year = 10000 + member_idx
-        print(f"\n  Member {member_idx} -> env_year {env_year}")
+    env_year = 10000 + job
+    print(f"\n  Member {job} -> env_year {env_year}")
 
-        process_member(
-            ds_pl,
+    process_member(
+        ds_pl,
+        ds_sfc,
+        job,
+        init_date,
+        lead_months,
+        env_year,
+        dst_lats,
+        dst_lons,
+    )
+
+    if generate_config:
+        phase_schedule = build_phase_schedule_from_seas5(
             ds_sfc,
-            member_idx,
+            job,
             init_date,
             lead_months,
-            env_year,
-            dst_lats,
-            dst_lons,
+            threshold=oni_threshold,
         )
-
-        if generate_config:
-            phase_schedule = build_phase_schedule_from_seas5(
-                ds_sfc,
-                member_idx,
-                init_date,
-                lead_months,
-                threshold=oni_threshold,
-            )
-            generate_forecast_config(
-                init_date=init_date,
-                lead_months=lead_months,
-                member_idx=member_idx,
-                env_year=env_year,
-                active_months=active_months or [6, 7, 8, 9, 10, 11],
-                phase_schedule=phase_schedule,
-                out_path=f"forecast_configs/config_m{member_idx}.json",
-            )
+        generate_forecast_config(
+            init_date=init_date,
+            lead_months=lead_months,
+            member_idx=job,
+            env_year=env_year,
+            active_months=active_months or [6, 7, 8, 9, 10, 11],
+            phase_schedule=phase_schedule,
+            out_path=f"forecast_configs/config_m{job}.json",
+        )
 
     ds_pl.close()
     ds_sfc.close()
-    print(f"\nDone: {len(members)} members processed.")
+    print(f"\nDone: {job} member processed.")
+
+
+# =========================================================================
+# Main pipeline: download once, process N members
+# =========================================================================
 
 
 if __name__ == "__main__":
@@ -715,7 +706,7 @@ if __name__ == "__main__":
         "--member",
         type=int,
         nargs="*",
-        default=None,
+        default=51,
         help="Member indices to process (default: all 51). E.g. --member 0 12 37",
     )
     parser.add_argument(
@@ -736,14 +727,59 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip CDS download (use existing files)",
     )
+    parser.add_argument(
+        "--workers", type=int, default=1, help="Number of cores used to parallelize"
+    )
+
     args = parser.parse_args()
 
-    process_all_members(
+    start_time = time.time()
+
+    raw_dir = os.path.join(__location__, "forecast_raw")
+    if not args.skip_download:
+        files = download_seas5(args.init_date, args.lead_months, raw_dir)
+    else:
+        files = {
+            "pl": os.path.join(raw_dir, "seas5_pl.nc"),
+            "sfc": os.path.join(raw_dir, "seas5_sfc.nc"),
+        }
+        for k, p in files.items():
+            if not os.path.exists(p):
+                raise FileNotFoundError(
+                    f"--skip-download but {p} not found. "
+                    f"Run without --skip-download first."
+                )
+
+    # Build job list: all (members) of SEAS5
+    jobs = [m for m in range(args.member)]
+    n_workers = args.workers or min(len(jobs), mp.cpu_count())
+
+    # ---- Run in parallel ----
+
+    worker_fn = partial(
+        _run_single_member,
         init_date=args.init_date,
         lead_months=args.lead_months,
-        members=args.member,
         generate_config=args.generate_config,
         active_months=args.active_months,
         oni_threshold=args.oni_threshold,
-        skip_download=args.skip_download,
     )
+
+    if n_workers == 1:
+        # Sequential mode (useful for debugging)
+        results = [worker_fn(job) for job in jobs]
+    else:
+        # imap_unordered yields results as each job finishes, so you see
+        # progress immediately instead of waiting for ALL jobs to complete.
+        # pool.map blocked on the slowest worker — if one storm entered an
+        # infinite loop, no results were returned and no output was visible.
+        results = []
+        with mp.Pool(processes=n_workers) as pool:
+            for i, result in enumerate(pool.imap_unordered(worker_fn, jobs)):
+                results.append(result)
+                elapsed_so_far = time.time() - start_time
+                print(
+                    f"  [{i + 1}/{len(jobs)} done] "
+                    f"{os.path.basename(result) if result else '(empty)'} "
+                    f"  ({elapsed_so_far / 60:.1f} min elapsed)"
+                )
