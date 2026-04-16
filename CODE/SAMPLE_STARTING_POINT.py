@@ -7,9 +7,12 @@ import os
 import sys
 from CODE.SELECT_BASIN import Basins_WMO
 from CODE.siena_utils import normalize_phase
+from CODE.genesis_matrix import _blend_genesis_with_env, compute_gpi_field
 
 __location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
 dir_path = __location__
+_RUNTIME_GPI_CACHE = {}
+
 
 def Check_EP_formation(lat, lon):
     # Block EP genesis in the NA-exclusive zone (lon>276 AND lat>20)
@@ -48,6 +51,7 @@ def _build_weighted_index(grid_copy, round_coeff=4):
                 weighted_list_index.extend([i * (ncols) + j] * value)
     return weighted_list_index, grid_copy
 
+
 _LAND_MASK_CACHE_SP = {}
 
 
@@ -61,7 +65,31 @@ def _get_land_mask_sp(basin):
     return _LAND_MASK_CACHE_SP[basin]
 
 
-def Startingpoint(no_storms, monthlist, basin, phase=None, month_phases=None):
+def Startingpoint(
+    no_storms,
+    monthlist,
+    basin,
+    phase=None,
+    month_phases=None,
+    env_years=None,
+):
+    # Local cache framework for GPI
+    gpi_cache = {}
+
+    def _get_runtime_gpi(month, effective_phase, env_year):
+        key = (month, effective_phase, env_year)
+        if key not in gpi_cache:
+            gpi_cache[key] = compute_gpi_field(
+                basin,
+                month,
+                phase=effective_phase,
+                env_year=env_year,
+            )
+        return gpi_cache[key]
+
+
+
+
     phase = normalize_phase(phase)
     basins = ["EP", "NA", "NI", "SI", "SP", "WP"]
     basin_name = dict(zip(basins, [0, 1, 2, 3, 4, 5]))
@@ -72,39 +100,70 @@ def Startingpoint(no_storms, monthlist, basin, phase=None, month_phases=None):
     land_mask = _get_land_mask_sp(basin)
 
     for month in monthlist:
-
         effective_phase = phase
         if month_phases is not None and month in month_phases:
             effective_phase = normalize_phase(month_phases[month])
+        env_year = None if env_years is None else env_years.get(month)
 
-        # ---- FIX: Try phase-specific grid first, fall back to pooled ----
-        grid_path_phase = None
+        # file path to the 1x1 degree matrix for genesis (fallback pooled)
         grid_path_pooled = os.path.join(
             dir_path, f"GRID_GENESIS_MATRIX_{idx}_{month}.txt"
         )
+        empirical_path_pooled = os.path.join(
+            dir_path, f"GRID_GENESIS_EMPIRICAL_MATRIX_{idx}_{month}.txt"
+        )
+        grid_path_phase = None
+        empirical_path_phase = None
 
         if effective_phase is not None:  # ← was: if phase is not None
-            candidate = os.path.join(
-                dir_path, f"GRID_GENESIS_MATRIX_{idx}_{month}_{effective_phase}.txt"
+            grid_path_phase = os.path.join(
+                 dir_path, f"GRID_GENESIS_MATRIX_{idx}_{month}_{effective_phase}.txt"
+             )
+            empirical_path_phase = os.path.join(
+                dir_path,
+                f"GRID_GENESIS_EMPIRICAL_MATRIX_{idx}_{month}_{effective_phase}.txt",
             )
-            if os.path.exists(candidate):
-                grid_path_phase = candidate
 
-        # Try phase grid first
-        weighted_list_index = []
-        grid_copy = None
-        if grid_path_phase is not None:
-            raw = np.loadtxt(grid_path_phase)
-            weighted_list_index, grid_copy = _build_weighted_index(raw)
+        # Option B:
+        # If a runtime env-year is available, start from the empirical matrix
+        # and blend with a runtime year-conditioned GPI using the existing
+        # _blend_genesis_with_env() helper.
+        if env_year is not None:
+            empirical_path = empirical_path_pooled
+            if empirical_path_phase is not None and os.path.exists(empirical_path_phase):
+                empirical_path = empirical_path_phase
 
-        # Fallback to pooled if phase grid is empty or missing
+            if os.path.exists(empirical_path):
+                raw_empirical = np.loadtxt(empirical_path)
+                cache_key = (basin, month, effective_phase, env_year)
+                if cache_key not in _RUNTIME_GPI_CACHE:
+                    _RUNTIME_GPI_CACHE[cache_key] = compute_gpi_field(
+                        basin,
+                        month,
+                        phase=effective_phase,
+                        env_year=env_year,
+                    )
+                env_runtime = _get_runtime_gpi(month, effective_phase, env_year)
+
+                if env_runtime is not None:
+                    raw = _blend_genesis_with_env(
+                        raw_empirical,
+                        env_runtime,
+                        label=f"runtime {basin}/{month}/{effective_phase}/{env_year}",
+                    )
+                    weighted_list_index, grid_copy = _build_weighted_index(raw)
+                    
+        
+
+        # Fallback to the precomputed climatological blended matrix
+        if len(weighted_list_index) == 0:
+            if grid_path_phase is not None and os.path.exists(grid_path_phase):
+                raw = np.loadtxt(grid_path_phase)
+                weighted_list_index, grid_copy = _build_weighted_index(raw)
+
         if len(weighted_list_index) == 0:
             raw = np.loadtxt(grid_path_pooled)
             weighted_list_index, grid_copy = _build_weighted_index(raw)
-
-        # If still empty (shouldn't happen for pooled, but be safe)
-        if len(weighted_list_index) == 0:
-            continue
 
         ncols = len(grid_copy[0, :])
         var = 0
