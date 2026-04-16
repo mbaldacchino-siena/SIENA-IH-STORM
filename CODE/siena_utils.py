@@ -15,7 +15,7 @@ def normalize_phase(phase):
     if phase is None:
         return None
     phase = str(phase).strip().upper()
-    if phase in {"N", "NONE", "ALL", "POOLED"}:
+    if phase in {"N", "NONE", "ALL", "POOLED", "FCST"}:
         return None
     if phase not in PHASE_TO_CODE:
         raise ValueError(f"Unsupported phase: {phase}")
@@ -550,3 +550,44 @@ def blended_genesis(
         genesis_month_list.extend([m] * c)
 
     return storms_per_year, genesis_month_list
+
+
+
+def compute_relative_vorticity_spherical(u, v, lat_deg, lon_deg, radius=6.371e6):
+    """
+    Relative vorticity on a regular lat-lon grid:
+
+        zeta = 1/(a cos(phi)) * dv/dlambda - 1/a * du/dphi + u tan(phi)/a
+
+    Parameters
+    ----------
+    u, v : 2D arrays (lat, lon), m s-1
+    lat_deg, lon_deg : 1D arrays, degrees
+    radius : float, Earth radius in m
+
+    Returns
+    -------
+    zeta : 2D array, s-1
+    """
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    lat_rad = np.deg2rad(np.asarray(lat_deg, dtype=np.float64))
+    lon_rad = np.deg2rad(np.asarray(lon_deg, dtype=np.float64))
+
+    coslat = np.cos(lat_rad)
+    tanlat = np.tan(lat_rad)
+    coslat = np.where(np.abs(coslat) < 1e-10, np.nan, coslat)
+
+    # d()/dphi with the true latitude coordinate
+    dudphi = np.gradient(u, lat_rad, axis=0, edge_order=2)
+
+    # d()/dlambda with cyclic longitude handling
+    dlon = float(np.mean(np.diff(lon_rad)))
+    dvdlambda = (np.roll(v, -1, axis=1) - np.roll(v, 1, axis=1)) / (2.0 * dlon)
+
+    zeta = (
+        dvdlambda / (radius * coslat[:, None])
+        - dudphi / radius
+        + u * tanlat[:, None] / radius
+    )
+    return zeta
