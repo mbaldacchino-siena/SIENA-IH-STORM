@@ -11,7 +11,6 @@ from CODE.genesis_matrix import _blend_genesis_with_env, compute_gpi_field
 
 __location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
 dir_path = __location__
-_RUNTIME_GPI_CACHE = {}
 
 
 def Check_EP_formation(lat, lon):
@@ -87,9 +86,6 @@ def Startingpoint(
             )
         return gpi_cache[key]
 
-
-
-
     phase = normalize_phase(phase)
     basins = ["EP", "NA", "NI", "SI", "SP", "WP"]
     basin_name = dict(zip(basins, [0, 1, 2, 3, 4, 5]))
@@ -117,32 +113,28 @@ def Startingpoint(
 
         if effective_phase is not None:  # ← was: if phase is not None
             grid_path_phase = os.path.join(
-                 dir_path, f"GRID_GENESIS_MATRIX_{idx}_{month}_{effective_phase}.txt"
-             )
+                dir_path, f"GRID_GENESIS_MATRIX_{idx}_{month}_{effective_phase}.txt"
+            )
             empirical_path_phase = os.path.join(
                 dir_path,
                 f"GRID_GENESIS_EMPIRICAL_MATRIX_{idx}_{month}_{effective_phase}.txt",
             )
 
-        # Option B:
         # If a runtime env-year is available, start from the empirical matrix
         # and blend with a runtime year-conditioned GPI using the existing
         # _blend_genesis_with_env() helper.
+        weighted_list_index = []
+        grid_copy = None
+
         if env_year is not None:
             empirical_path = empirical_path_pooled
-            if empirical_path_phase is not None and os.path.exists(empirical_path_phase):
+            if empirical_path_phase is not None and os.path.exists(
+                empirical_path_phase
+            ):
                 empirical_path = empirical_path_phase
 
             if os.path.exists(empirical_path):
                 raw_empirical = np.loadtxt(empirical_path)
-                cache_key = (basin, month, effective_phase, env_year)
-                if cache_key not in _RUNTIME_GPI_CACHE:
-                    _RUNTIME_GPI_CACHE[cache_key] = compute_gpi_field(
-                        basin,
-                        month,
-                        phase=effective_phase,
-                        env_year=env_year,
-                    )
                 env_runtime = _get_runtime_gpi(month, effective_phase, env_year)
 
                 if env_runtime is not None:
@@ -152,10 +144,7 @@ def Startingpoint(
                         label=f"runtime {basin}/{month}/{effective_phase}/{env_year}",
                     )
                     weighted_list_index, grid_copy = _build_weighted_index(raw)
-                    
-        
 
-        # Fallback to the precomputed climatological blended matrix
         if len(weighted_list_index) == 0:
             if grid_path_phase is not None and os.path.exists(grid_path_phase):
                 raw = np.loadtxt(grid_path_phase)
@@ -164,6 +153,12 @@ def Startingpoint(
         if len(weighted_list_index) == 0:
             raw = np.loadtxt(grid_path_pooled)
             weighted_list_index, grid_copy = _build_weighted_index(raw)
+        
+        if len(weighted_list_index) == 0:
+            raise RuntimeError(
+                f"No valid genesis sampling weights for basin={basin}, month={month}, "
+                f"phase={effective_phase}, env_year={env_year}"
+            )
 
         ncols = len(grid_copy[0, :])
         var = 0
