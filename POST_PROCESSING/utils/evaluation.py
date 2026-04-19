@@ -175,7 +175,8 @@ STORM_COLUMNS_PRESS = [
 
 def load_storm_file(filepath: str) -> pd.DataFrame:
     """Load a single STORM .txt file into a DataFrame."""
-    if "pressure" in filepath:
+    print(filepath)
+    if "SIENA" in filepath:
         df = pd.read_csv(
             filepath,
             header=None,
@@ -981,7 +982,7 @@ def return_periods_at_cities(
             crs="EPSG:4326",
         )
 
-        if "pressure" in catalog[0]:
+        if "SIENA" in catalog[0]:
             # from climada_utils import add_p_env
 
             scenarios = [
