@@ -125,11 +125,15 @@ def Startingpoint(
         weighted_list_index = []
         grid_copy = None
 
-        if env_year is not None:
+        # Runtime year-conditioned blend: only applicable in FORECAST mode,
+        # where month_phases is populated by get_month_phases(forecast_cfg, ...).
+        # In historical/classic mode month_phases is None, and the baked
+        # GRID_GENESIS_MATRIX_{idx}_{month}[_phase].txt files from preprocessing
+        # already encode the chosen genesis_weighting (EMPIRICAL / GPI / GPI-MIX).
+        # Using the runtime blend in classic mode would silently bypass that choice.
+        if env_year is not None and month_phases is not None:
             empirical_path = empirical_path_pooled
-            if empirical_path_phase is not None and os.path.exists(
-                empirical_path_phase
-            ):
+            if empirical_path_phase is not None and os.path.exists(empirical_path_phase):
                 empirical_path = empirical_path_phase
 
             if os.path.exists(empirical_path):
