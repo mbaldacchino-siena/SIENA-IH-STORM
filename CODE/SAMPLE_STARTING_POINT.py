@@ -12,15 +12,34 @@ __location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
 dir_path = __location__
 
 
-def Check_EP_formation(lat, lon):
-    # Block EP genesis in the NA-exclusive zone (lon>276 AND lat>20)
-    return lon > 276 and lat > 20
-
-
 def Check_NA_formation(lat, lon):
-    # Block NA genesis in the EP-exclusive zone (lon<276 AND lat<20)
-    return lon < 276 and lat < 20
+    """
+    Reject NA sampling in EP-exclusive waters (Pacific side of Central America).
+    Uses a single diagonal separator through the Central American isthmus,
+    applied only in the NA–EP overlap longitudes (255–285E = 75–105W).
+    Outside that strip, nothing is blocked (NA owns everything east of 285E).
+    """
+    # Outside the overlap strip, NA has exclusive claim
+    if lon >= 285.0:  # east of 75W — pure NA Atlantic/Caribbean
+        return False
+    # In the overlap strip, use the isthmus separator
+    # Isthmus line: from (16N, 92W) = (16, 268E) to (8N, 78W) = (8, 282E)
+    # lat_isthmus(lon) = 16 - (16-8)/(282-268) * (lon - 268) = 16 - 0.571*(lon - 268)
+    lat_isthmus = 16.0 - 0.571 * (lon - 268.0)
+    return lat < lat_isthmus
 
+
+def Check_EP_formation(lat, lon):
+    """
+    Reject EP sampling in NA-exclusive waters (Atlantic/Caribbean side).
+    Symmetric to above.
+    """
+    if lon < 255.0:  # west of 105W — pure EP Pacific
+        return False
+    if lon >= 285.0:  # east of 75W — not in EP range at all, definitely NA
+        return True
+    lat_isthmus = 16.0 - 0.571 * (lon - 268.0)
+    return lat >= lat_isthmus
 
 def Check_if_landfall(lat, lon, basin, land_mask):
     s, monthdummy, lat0_WMO, lat1_WMO, lon0_WMO, lon1_WMO = Basins_WMO(basin)
