@@ -289,8 +289,8 @@ def TC_movement(
             if np.abs(lat) >= 45 and dlon1 < 0.0:
                 dlon1 = 0
 
-            lat = round(dlat1 + lat, 1)
-            lon = round(dlon1 + lon, 1)
+            lat = round(dlat1 + lat, 2)
+            lon = round(dlon1 + lon, 2)
             dlat0 = dlat1
             dlon0 = dlon1
             if lat <= lat1 - 0.1 and lat > lat0 and lon <= lon1 - 0.1 and lon > lon0:

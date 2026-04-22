@@ -472,13 +472,13 @@ def add_parameters_to_TC_data(
                 idx,
                 lat_arr[l],
                 lon_arr[l],
-                pressure_list[l],
-                wind_list[l],
-                rmax_list[l],
+                round(pressure_list[l],1),
+                round(wind_list[l],1),
+                round(rmax_list[l],1),
                 int(category_arr[l]),
                 land_arr[l],
-                float(dist_arr[l]),
-                float(penv_arr[l]),
+                round(float(dist_arr[l]),1),
+                round(float(penv_arr[l]),1),
                 _env_year_val,
             ]
         )
