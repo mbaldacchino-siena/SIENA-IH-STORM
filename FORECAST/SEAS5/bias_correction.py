@@ -20,16 +20,14 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-import config
-import regrid
+import FORECAST.SEAS5.config as config
+import FORECAST.SEAS5.regrid as regrid
 
 logger = logging.getLogger(__name__)
 
 # SEAS5 leadtime_month convention:
 #   LEAD_OFFSET = 0  -> lead 1 = init month itself
-#   LEAD_OFFSET = 1  -> lead 1 = first full month AFTER init (CDS default)
-# Verify against your downloaded file's `valid_time` coord if present.
-LEAD_OFFSET = 1
+LEAD_OFFSET = 0
 
 
 # =============================================================================
@@ -59,7 +57,7 @@ def compute_valid_month(
 def apply_delta_correction(
     era5_clim: xr.DataArray,
     seas5_anomaly: xr.DataArray,
-    init_coord: str = "time",
+    init_coord: str = "forecast_reference_time",
     lead_coord: str = "forecastMonth",
 ) -> xr.DataArray:
     """Apply delta correction to a single variable.
@@ -82,6 +80,7 @@ def apply_delta_correction(
     xr.DataArray
         Bias-corrected forecast, same shape as seas5_anomaly.
     """
+
     # Compute valid month for each (init, lead) pair
     valid_month = compute_valid_month(
         seas5_anomaly[init_coord], seas5_anomaly[lead_coord]
