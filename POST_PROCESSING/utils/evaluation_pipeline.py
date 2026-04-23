@@ -593,7 +593,7 @@ def fig_density_panels(
             pos = g[g > 0]
             if len(pos):
                 vmin_pos = min(vmin_pos, pos.min())
-                vmax_val = max(vmax_val, np.percentile(pos, 97))
+                vmax_val = max(vmax_val, np.percentile(pos, 99))
     if vmax_val == 0:
         vmax_val = 100
         vmin_pos = 1
@@ -616,6 +616,7 @@ def fig_density_panels(
             if p:
                 lat, lon, grid = load_density_grid(p)
                 grid_plot = np.where(grid > 0, grid, np.nan)
+
                 if log:
                     norm = mcolors.LogNorm(vmin=vmin_pos, vmax=vmax_val)
                 else:
@@ -670,7 +671,6 @@ def fig_density_panels(
     )
     _save(fig, cfg, f"{dtype}_{basin}")
 
-
 def fig_density_diff(
     cfg: EvalConfig,
     basin: str,
@@ -686,48 +686,74 @@ def fig_density_diff(
 
     use_carto = HAS_CARTOPY and cfg.use_cartopy
     subplot_kw = {"projection": ccrs.PlateCarree()} if use_carto else {}
+
     fig, axes = plt.subplots(
         len(models),
         len(phases),
         figsize=(5 * len(phases), 3 * len(models)),
         subplot_kw=subplot_kw,
     )
+
     if len(models) == 1:
         axes = axes[np.newaxis, :]
 
+    # First pass: compute/store all diffs
+    diff_data = {}
+    all_abs_nonzero = []
+
     for i, model in enumerate(models):
         for j, ph in enumerate(phases):
-            ax = axes[i, j]
             p_obs = find_density_file(cfg, basin, "IBTrACS", dtype, ph)
             p_mod = find_density_file(cfg, basin, model, dtype, ph)
 
-            if p_obs and p_mod:
-                lat_o, lon_o, g_o = load_density_grid(p_obs)
-                lat_m, lon_m, g_m = load_density_grid(p_mod)
-                go = np.nan_to_num(g_o, nan=0.0)
-                gm = np.nan_to_num(g_m, nan=0.0)
+            if not (p_obs and p_mod):
+                diff_data[(i, j)] = None
+                continue
 
-                if go.shape == gm.shape:
-                    diff = gm - go
-                    lat_d, lon_d = lat_o, lon_o
-                else:
-                    # Interpolate model grid onto obs grid
-                    from scipy.interpolate import RegularGridInterpolator
+            lat_o, lon_o, g_o = load_density_grid(p_obs)
+            lat_m, lon_m, g_m = load_density_grid(p_mod)
+            go = np.nan_to_num(g_o, nan=0.0)
+            gm = np.nan_to_num(g_m, nan=0.0)
 
-                    interp = RegularGridInterpolator(
-                        (lat_m, lon_m), gm, bounds_error=False, fill_value=0
-                    )
-                    pts = (
-                        np.array(np.meshgrid(lat_o, lon_o, indexing="ij"))
-                        .reshape(2, -1)
-                        .T
-                    )
-                    diff = interp(pts).reshape(len(lat_o), len(lon_o)) - go
-                    lat_d, lon_d = lat_o, lon_o
+            if go.shape == gm.shape:
+                diff = gm - go
+                lat_d, lon_d = lat_o, lon_o
+            else:
+                from scipy.interpolate import RegularGridInterpolator
 
-                nonzero = diff[diff != 0]
-                vabs = np.percentile(np.abs(nonzero), 97) if len(nonzero) else 1
-                norm = mcolors.TwoSlopeNorm(vmin=-vabs, vcenter=0, vmax=vabs)
+                interp = RegularGridInterpolator(
+                    (lat_m, lon_m), gm, bounds_error=False, fill_value=0
+                )
+                pts = (
+                    np.array(np.meshgrid(lat_o, lon_o, indexing="ij")).reshape(2, -1).T
+                )
+                diff = interp(pts).reshape(len(lat_o), len(lon_o)) - go
+                lat_d, lon_d = lat_o, lon_o
+
+            diff_data[(i, j)] = (lat_d, lon_d, diff)
+
+            nonzero = np.abs(diff[diff != 0])
+            if nonzero.size:
+                all_abs_nonzero.append(nonzero)
+
+    # One shared color scale for all panels
+    if all_abs_nonzero:
+        all_abs_nonzero = np.concatenate(all_abs_nonzero)
+        vabs = np.percentile(all_abs_nonzero, 99.9)
+    else:
+        vabs = 1
+
+    norm = mcolors.TwoSlopeNorm(vmin=-vabs, vcenter=0, vmax=vabs)
+
+    # Second pass: plot with shared norm
+    pcm = None
+    for i, model in enumerate(models):
+        for j, ph in enumerate(phases):
+            ax = axes[i, j]
+            item = diff_data[(i, j)]
+
+            if item is not None:
+                lat_d, lon_d, diff = item
                 pcm = ax.pcolormesh(
                     lon_d,
                     lat_d,
@@ -737,7 +763,6 @@ def fig_density_diff(
                     shading="auto",
                     transform=ccrs.PlateCarree() if use_carto else None,
                 )
-                plt.colorbar(pcm, ax=ax, shrink=0.7, pad=0.02)
 
             _map_axis(ax, extent, cfg)
 
@@ -760,14 +785,25 @@ def fig_density_diff(
                 else:
                     ax.set_ylabel(label, fontsize=9, fontweight="bold")
 
+    # One shared colorbar outside
+    if pcm is not None:
+        fig.colorbar(
+            pcm,
+            ax=axes.ravel().tolist(),
+            orientation="vertical",
+            shrink=0.9,
+            pad=0.02,
+            label="Synthetic − observed",
+        )
+
     fig.suptitle(
         f"{title_prefix} difference (synthetic − observed) — {basin}",
         fontsize=13,
         fontweight="bold",
         y=0.98,
     )
-    _save(fig, cfg, f"{dtype}_diff_{basin}")
 
+    _save(fig, cfg, f"{dtype}_diff_{basin}")
 
 # ============================================================================
 # Figure 6: Intensity CDFs (Vmax and Pmin)
