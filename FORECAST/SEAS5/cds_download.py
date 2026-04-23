@@ -16,7 +16,7 @@ from typing import List
 
 import cdsapi
 
-import config
+import FORECAST.SEAS5.config as config
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ def download_seas5_single_level_anomaly(
         "seasonal-postprocessed-single-levels",
         {
             "originating_centre": "ecmwf",
-            "system": "5",
+            "system": "51",
             "variable": anomaly_var,
             "product_type": "monthly_mean",
             "year": [str(y) for y in years],
@@ -188,7 +188,7 @@ def download_seas5_pressure_level_anomaly(
         "seasonal-postprocessed-pressure-levels",
         {
             "originating_centre": "ecmwf",
-            "system": "5",
+            "system": "51",
             "variable": anomaly_var,
             "pressure_level": [str(p) for p in pressure_levels],
             "product_type": "monthly_mean",
