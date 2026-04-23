@@ -66,88 +66,50 @@ try:
 except ImportError:
     HAS_TCPYPI = False
 
-from CODE.siena_utils import save_yearly_field, _env_yearly_dir, compute_relative_vorticity_spherical
+from CODE.siena_utils import (
+    save_yearly_field,
+    _env_yearly_dir,
+    compute_relative_vorticity_spherical,
+)
+
+# Bias-correction pipeline (replaces raw SEAS5 download)
+from FORECAST.SEAS5 import loader as seas5_loader
+from FORECAST.SEAS5 import enso as seas5_enso
 
 __location__ = os.path.realpath(os.getcwd())
 
 
 # =========================================================================
-# CDS download — single request, all 51 members included
+# SEAS5 preparation — delegates to the bias-correction pipeline.
+# This replaces the previous direct-download approach: we now pull SEAS5
+# anomalies from the CDS `seasonal-postprocessed-*` datasets, regrid the
+# ERA5 1993-2016 climatology, and reconstruct absolute fields via
+#       X_corrected = ERA5_clim(valid_month) + SEAS5_anomaly
+# before any downstream processing. See FORECAST/SEAS5/README.md for the
+# scientific rationale and the reference-period mismatch caveat.
 # =========================================================================
 
 
-def download_seas5(init_date, lead_months, out_dir):
+def prepare_seas5_bias_corrected(init_date, lead_months, overwrite=False):
+    """Run bias-correction pipeline for this init and return merged datasets.
+
+    Idempotent: skips ERA5 download + climatology steps if files already
+    exist on disk. Only the forecast-specific steps (download SEAS5
+    anomalies + apply correction) re-run when the target init changes.
+
+    Returns
+    -------
+    ds_pl : xr.Dataset  (u, v, t, q on SEAS5 pressure levels)
+    ds_sfc : xr.Dataset (sst, msl)
+        Both on SEAS5 native grid (~1°), values on the ERA5 absolute scale.
     """
-    Download SEAS5 monthly forecast from CDS.
-    CDS always returns ALL 51 ensemble members in a single file,
-    regardless of any 'member' parameter in the request.
-
-    Returns dict: {"pl": path, "sfc": path}
-    """
-    if cdsapi is None:
-        raise ImportError(
-            "cdsapi not installed. Install with: pip install cdsapi\n"
-            "Configure ~/.cdsapirc with your CDS credentials."
-        )
-
-    os.makedirs(out_dir, exist_ok=True)
-    client = cdsapi.Client()
-
-    year, month, _ = init_date.split("-")
-    leadtime_months = list(range(1, lead_months + 1))
-
-    pl_file = os.path.join(out_dir, "seas5_pl.nc")
-    if not os.path.exists(pl_file):
-        print("Downloading SEAS5 pressure-level fields (all 51 members)...")
-        client.retrieve(
-            "seasonal-monthly-pressure-levels",
-            {
-                "originating_centre": "ecmwf",
-                "system": "51",
-                "variable": [
-                    "u_component_of_wind",
-                    "v_component_of_wind",
-                    "temperature",
-                    "specific_humidity",
-                ],
-                "pressure_level": "all",
-                "product_type": "monthly_mean",
-                "year": year,
-                "month": month.lstrip("0"),
-                "leadtime_month": leadtime_months,
-                "data_format": "netcdf",
-            },
-            pl_file,
-        )
-        print(f"  Saved: {pl_file}")
-    else:
-        print(f"  Skipping download (exists): {pl_file}")
-
-    sfc_file = os.path.join(out_dir, "seas5_sfc.nc")
-    if not os.path.exists(sfc_file):
-        print("Downloading SEAS5 surface fields (all 51 members)...")
-        client.retrieve(
-            "seasonal-monthly-single-levels",
-            {
-                "originating_centre": "ecmwf",
-                "system": "51",
-                "variable": [
-                    "sea_surface_temperature",
-                    "mean_sea_level_pressure",
-                ],
-                "product_type": "monthly_mean",
-                "year": year,
-                "month": month.lstrip("0"),
-                "leadtime_month": leadtime_months,
-                "data_format": "netcdf",
-            },
-            sfc_file,
-        )
-        print(f"  Saved: {sfc_file}")
-    else:
-        print(f"  Skipping download (exists): {sfc_file}")
-
-    return {"pl": pl_file, "sfc": sfc_file}
+    seas5_loader.ensure_climatology()
+    ds_pl, ds_sfc = seas5_loader.prepare_corrected_for_init(
+        init_date=init_date,
+        lead_months=lead_months,
+        overwrite_correction=overwrite,
+    )
+    return ds_pl, ds_sfc
 
 
 # =========================================================================
@@ -248,7 +210,9 @@ def process_member(
     n_leads = min(int(pl.sizes["forecastMonth"]), lead_months)
 
     for t_idx in range(n_leads):
-        valid_month = ((init_month - 1) + t_idx + 1) % 12 + 1
+        # SEAS5 lead 1 (t_idx=0) = init month itself for instantaneous monthly
+        # means. valid_month = ((init_month - 1) + (lead - 1)) % 12 + 1.
+        valid_month = ((init_month - 1) + t_idx) % 12 + 1
 
         # Pressure-level fields: (pressure_level, latitude, longitude)
         pl_t = pl.isel(forecastMonth=t_idx)
@@ -435,7 +399,8 @@ def compute_oni_from_member(
     anomalies = {}
     n_leads = min(int(sfc.sizes["forecastMonth"]), lead_months)
     for t_idx in range(n_leads):
-        valid_month = ((init_month - 1) + t_idx + 1) % 12 + 1
+        # SEAS5 lead 1 (t_idx=0) = init month itself.
+        valid_month = ((init_month - 1) + t_idx) % 12 + 1
         sst_field = sfc["sst"].isel(forecastMonth=t_idx).values
         nino34 = compute_nino34_sst(sst_field, lats, lons)
         baseline = sst_climatology.get(valid_month, np.nan)
@@ -449,105 +414,56 @@ def build_phase_schedule_from_seas5(
     member_idx,
     init_date,
     lead_months,
-    climate_index_path="climate_index.csv",
+    climate_index_path=None,
+    observed_source="psl",
     threshold=0.5,
 ):
     """
-    Build a 12-month phase_schedule by combining:
-      1. Observed ONI from climate_index.csv (months before init)
-      2. SEAS5-derived ONI from this member's SST (forecast months)
-      3. Persistence of last forecast phase (beyond SEAS5 horizon)
+    Build a 12-month phase_schedule for one SEAS5 member.
+
+    Delegates to FORECAST.SEAS5.enso.phase_schedule_from_corrected. By
+    default the observed monthly Niño 3.4 anomalies are fetched from NOAA
+    PSL (ERSST V5, 1981-2010 baseline) and cached for 24h on disk under
+    FORECAST/SEAS5/data/psl_nina34.txt.
+
+    The PSL route gives MONTHLY anomalies (not pre-averaged ONI), which
+    lets us compute one consistent centered 3-month average that mixes
+    observed and SEAS5 monthly values across the init-month boundary.
+    Falls back to a CSV (columns: year, month, value) if the network call
+    fails and `climate_index_path` is provided.
 
     Parameters
     ----------
-    ds_sfc : xarray.Dataset (all members, already open)
+    ds_sfc : xr.Dataset, bias-corrected surface dataset (contains 'sst' + 'msl')
     member_idx : int
-    init_date : str
-    lead_months : int
-    climate_index_path : str
+    init_date : str "YYYY-MM-DD"
+    lead_months : int  (kept for API compatibility; inferred from ds_sfc)
+    climate_index_path : str or None
+        Required only if observed_source='csv'. Also used as a fallback
+        if 'psl' is requested and the network call fails.
+    observed_source : {'psl', 'csv'}
     threshold : float
-
-    Returns
-    -------
-    dict : {month_int: "LN"|"NEU"|"EN"} for months 1-12
     """
-    init_year = int(init_date[:4])
-    init_month = int(init_date[5:7])
+    # Extract this member's bias-corrected SST; squeeze any singleton dims.
+    sst = ds_sfc["sst"].isel(number=member_idx)
+    for dim in ("forecast_reference_time", "time"):
+        if dim in sst.dims and sst.sizes[dim] == 1:
+            sst = sst.squeeze(dim)
 
-    # 1. Observed ONI
-    from siena_utils import load_climate_index_table
+    era5_sst_clim = seas5_loader.load_era5_sst_climatology()
 
-    oni_df = load_climate_index_table(os.path.join(__location__, climate_index_path))
-    observed_oni = {}
-    for _, row in oni_df.iterrows():
-        y, m = int(row["year"]), int(row["month"])
-        if y == init_year and m < init_month:
-            observed_oni[m] = float(row["climate_index"])
-        if y == init_year - 1 and m >= 11:
-            observed_oni[m - 12] = float(row["climate_index"])
-
-    # 2. SEAS5-derived Nino 3.4 anomaly
-    sst_climatology = load_oni_climatology()
-    if sst_climatology is None:
-        print("WARNING: Cannot compute SST climatology. Defaulting to NEU.")
-        return {m: "NEU" for m in range(1, 13)}
-
-    forecast_oni = compute_oni_from_member(
-        ds_sfc,
-        member_idx,
-        init_date,
-        lead_months,
-        sst_climatology,
+    csv_full_path = (
+        os.path.join(__location__, climate_index_path) if climate_index_path else None
     )
 
-    # 3. Merge
-    monthly_anomaly = {}
-    for m in range(1, 13):
-        if m in observed_oni:
-            monthly_anomaly[m] = observed_oni[m]
-        elif m in forecast_oni:
-            monthly_anomaly[m] = forecast_oni[m]
-
-    # 4. 3-month running mean ONI
-    oni_3m = {}
-    for m in range(1, 13):
-        vals = []
-        for offset in [-1, 0, 1]:
-            adj = m + offset
-            if adj in monthly_anomaly:
-                vals.append(monthly_anomaly[adj])
-            elif adj <= 0 and adj in observed_oni:
-                vals.append(observed_oni[adj])
-            elif adj == 13 and 1 in monthly_anomaly:
-                vals.append(monthly_anomaly[1])
-        if vals:
-            oni_3m[m] = float(np.nanmean(vals))
-
-    # 5. Classify + persistence
-    def _classify(v):
-        return "EN" if v >= threshold else ("LN" if v <= -threshold else "NEU")
-
-    phase_schedule = {}
-    last_phase = "NEU"
-    for m in range(1, 13):
-        if m in oni_3m and np.isfinite(oni_3m[m]):
-            phase_schedule[m] = _classify(oni_3m[m])
-            last_phase = phase_schedule[m]
-        else:
-            phase_schedule[m] = last_phase
-
-    print(f"  Phase schedule (member {member_idx}):")
-    for m in range(1, 13):
-        src = (
-            "obs" if m in observed_oni else "seas5" if m in forecast_oni else "persist"
-        )
-        oni_val = oni_3m.get(m, np.nan)
-        print(
-            f"    month {m:2d}: {phase_schedule[m]:3s}  "
-            f"(ONI={oni_val:+.2f}, source={src})"
-        )
-
-    return phase_schedule
+    return seas5_enso.phase_schedule_from_corrected(
+        corrected_sst=sst,
+        era5_sst_clim=era5_sst_clim,
+        init_date=init_date,
+        csv_path=csv_full_path,
+        observed_source=observed_source,
+        threshold=threshold,
+    )
 
 
 # =========================================================================
@@ -572,7 +488,9 @@ def generate_forecast_config(
     if observed_months is None:
         observed_months = list(range(1, init_month))
 
-    forecast_months = [((init_month - 1) + i + 1) % 12 + 1 for i in range(lead_months)]
+    # SEAS5 lead 1 = init month itself (instantaneous monthly means).
+    # For April init with lead_months=6: forecast_months = [4, 5, 6, 7, 8, 9].
+    forecast_months = [((init_month - 1) + i) % 12 + 1 for i in range(lead_months)]
 
     config = {
         "mode": "seasonal_forecast",
@@ -618,34 +536,29 @@ def _run_single_member(
     oni_threshold=0.5,
 ):
     """
-    Full pipeline: download once -> loop for one member.
+    Per-member processing. The bias-correction pipeline must have been
+    run already (typically once in __main__); this function only opens
+    the already-corrected NetCDFs and extracts fields for one member.
 
     Parameters
     ----------
-    job : member of SEAS5 ensemble to process over
+    job : member index (0-based) within the SEAS5 ensemble
     init_date : str, "YYYY-MM-DD"
     lead_months : int
     generate_config : bool
     active_months : list of int
     oni_threshold : float
-    skip_download : bool
     """
+    # Open the merged bias-corrected datasets (all 51 members, single init).
+    # These are produced by prepare_seas5_bias_corrected() in __main__ and
+    # cached on disk under FORECAST/SEAS5/data/seas5_corrected/.
+    ds_pl, ds_sfc = seas5_loader.prepare_corrected_for_init(
+        init_date=init_date,
+        lead_months=lead_months,
+        overwrite_correction=False,  # idempotent; will not re-download/recorrect
+    )
 
-    raw_dir = os.path.join(__location__, "forecast_raw")
-
-    files = {
-        "pl": os.path.join(raw_dir, "seas5_pl.nc"),
-        "sfc": os.path.join(raw_dir, "seas5_sfc.nc"),
-    }
-    for k, p in files.items():
-        if not os.path.exists(p):
-            raise FileNotFoundError(f" {p} not found. Please check.")
-
-    # Open datasets (shared across all members, read-only)
-    ds_pl = xr.open_dataset(files["pl"])
-    ds_sfc = xr.open_dataset(files["sfc"])
-
-    # Target grid
+    # Target grid for the 0.25° regrid step inside process_member
     try:
         ds_ref = xr.open_dataset(os.path.join(__location__, "Monthly_mean_SST.nc"))
         dst_lats = ds_ref.latitude.values
@@ -655,7 +568,7 @@ def _run_single_member(
         dst_lats = np.arange(90, -90.25, -0.25)
         dst_lons = np.arange(0, 360, 0.25)
 
-    print(f"Processing {job} member, {lead_months} lead months")
+    print(f"Processing member {job}, {lead_months} lead months (bias-corrected)")
     print(f"  PI: {'tcpyPI (full thermodynamic)' if HAS_TCPYPI else 'simplified'}")
 
     env_year = 10000 + job
@@ -692,7 +605,7 @@ def _run_single_member(
 
     ds_pl.close()
     ds_sfc.close()
-    print(f"\nDone: {job} member processed.")
+    print(f"\nDone: member {job} processed.")
 
 
 # =========================================================================
@@ -702,7 +615,7 @@ def _run_single_member(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Download and prepare SEAS5 forecast fields for SIENA-IH-STORM"
+        description="Prepare bias-corrected SEAS5 forecast fields for SIENA-IH-STORM"
     )
     parser.add_argument(
         "--init-date", required=True, help="Forecast init date YYYY-MM-DD"
@@ -731,7 +644,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--skip-download",
         action="store_true",
-        help="Skip CDS download (use existing files)",
+        help="Skip CDS download AND bias correction (use existing corrected files)",
+    )
+    parser.add_argument(
+        "--force-recorrect",
+        action="store_true",
+        help="Re-run bias correction even if corrected files exist",
     )
     parser.add_argument(
         "--workers", type=int, default=1, help="Number of cores used to parallelize"
@@ -741,26 +659,34 @@ if __name__ == "__main__":
 
     start_time = time.time()
 
-    raw_dir = os.path.join(__location__, "forecast_raw")
+    # ---- Step A: Ensure bias-corrected fields are ready on disk ----
+    # The bias-correction pipeline:
+    #   1. Downloads ERA5 monthly means (1993-2016) — first run only
+    #   2. Builds ERA5 monthly climatology — first run only
+    #   3. Downloads SEAS5 anomalies for this init — cached per init
+    #   4. Applies X_corrected = ERA5_clim + SEAS5_anomaly — cached per init
+    #
+    # Subsequent runs for the same init are ~free (idempotent skip).
     if not args.skip_download:
-        files = download_seas5(args.init_date, args.lead_months, raw_dir)
+        print("=" * 72)
+        print("Preparing bias-corrected SEAS5 fields")
+        print(f"  init_date: {args.init_date}, lead_months: {args.lead_months}")
+        print("=" * 72)
+        ds_pl_check, ds_sfc_check = prepare_seas5_bias_corrected(
+            init_date=args.init_date,
+            lead_months=args.lead_months,
+            overwrite=args.force_recorrect,
+        )
+        ds_pl_check.close()
+        ds_sfc_check.close()
     else:
-        files = {
-            "pl": os.path.join(raw_dir, "seas5_pl.nc"),
-            "sfc": os.path.join(raw_dir, "seas5_sfc.nc"),
-        }
-        for k, p in files.items():
-            if not os.path.exists(p):
-                raise FileNotFoundError(
-                    f"--skip-download but {p} not found. "
-                    f"Run without --skip-download first."
-                )
+        print("--skip-download: assuming bias-corrected files already exist on disk")
 
-    # Build job list: all (members) of SEAS5
+    # ---- Step B: Dispatch per-member processing ----
+    # Workers open the already-corrected NetCDFs read-only. No download
+    # happens in workers; they only extract, regrid, derive, and save.
     jobs = [m for m in range(args.member)]
     n_workers = args.workers or min(len(jobs), mp.cpu_count())
-
-    # ---- Run in parallel ----
 
     worker_fn = partial(
         _run_single_member,
@@ -775,10 +701,8 @@ if __name__ == "__main__":
         # Sequential mode (useful for debugging)
         results = [worker_fn(job) for job in jobs]
     else:
-        # imap_unordered yields results as each job finishes, so you see
-        # progress immediately instead of waiting for ALL jobs to complete.
-        # pool.map blocked on the slowest worker — if one storm entered an
-        # infinite loop, no results were returned and no output was visible.
+        # imap_unordered yields results as each job finishes, so progress
+        # is visible immediately rather than waiting on the slowest worker.
         results = []
         with mp.Pool(processes=n_workers) as pool:
             for i, result in enumerate(pool.imap_unordered(worker_fn, jobs)):
