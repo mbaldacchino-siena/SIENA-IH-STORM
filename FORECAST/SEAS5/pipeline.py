@@ -17,10 +17,10 @@ import logging
 from pathlib import Path
 from typing import List
 
-import config
-import cds_download
-import climatology
-import bias_correction
+import FORECAST.SEAS5.config as config
+import FORECAST.SEAS5.cds_download as cds_download
+import FORECAST.SEAS5.climatology as climatology
+import FORECAST.SEAS5.bias_correction as bias_correction
 
 logging.basicConfig(
     level=logging.INFO,

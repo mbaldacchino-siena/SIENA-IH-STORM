@@ -14,7 +14,7 @@ from pathlib import Path
 
 import xarray as xr
 
-import config
+import FORECAST.SEAS5.config as config
 
 logger = logging.getLogger(__name__)
 

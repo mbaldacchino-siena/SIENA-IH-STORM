@@ -72,8 +72,11 @@ PRESSURE_LEVEL_VARS = {
 # but costly. For NH hurricane season, April-June inits are most useful.
 INIT_MONTHS = list(range(1, 13))
 
-# Lead times in months (CDS convention: leadtime_month=1 is the first full
-# month after initialization). SEAS5 provides up to 7 lead months.
+# Lead times in months. For instantaneous monthly means (T, U, V, SST,
+# MSLP) on the `seasonal-monthly-*` and `seasonal-postprocessed-*` CDS
+# datasets, leadtime_month=1 is the INIT MONTH itself, so a 6-lead
+# request from an April 1 init covers April-September. SEAS5 provides
+# up to 7 lead months. See FORECAST/SEAS5/enso.py docstring for sources.
 LEADTIME_MONTHS = [1, 2, 3, 4, 5, 6]
 
 # =============================================================================
