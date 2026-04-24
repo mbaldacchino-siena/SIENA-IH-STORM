@@ -35,7 +35,9 @@ def compute_rmse_by_lead(
     era5_matched = datasets.match_era5_to_forecast(forecast, era5)
     diff = forecast - era5_matched  # (time, lead, number, lat, lon)
     rmse_per_sample = _spatial_rmse(diff)  # (time, lead, number)
-    collapse = [d for d in ("time", "number") if d in rmse_per_sample.dims]
+    collapse = [
+        d for d in ("forecast_reference_time", "number") if d in rmse_per_sample.dims
+    ]
     return rmse_per_sample.mean(dim=collapse)
 
 

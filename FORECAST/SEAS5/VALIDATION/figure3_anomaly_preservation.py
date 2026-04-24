@@ -44,7 +44,7 @@ def _anomaly_per_calendar_month(
     """
     import pandas as pd
 
-    init_pd = pd.to_datetime(forecast["time"].values)
+    init_pd = pd.to_datetime(forecast["forecast_reference_time"].values)
     leads = forecast["forecastMonth"].values
     # SEAS5 lead 1 = init month itself for instantaneous monthly means.
     # valid_month = ((init_month - 1) + (lead - 1)) % 12 + 1
@@ -56,13 +56,13 @@ def _anomaly_per_calendar_month(
     )
 
     forecast = forecast.assign_coords(
-        valid_month=(("time", "forecastMonth"), valid_months)
+        valid_month=(("forecast_reference_time", "forecastMonth"), valid_months)
     )
 
-    # Per-cell mean across (time, forecastMonth, number) grouped by valid_month.
-    # Stack (time, forecastMonth) first so groupby can operate along a 1-D axis
+    # Per-cell mean across (forecast_reference_time, forecastMonth, number) grouped by valid_month.
+    # Stack (forecast_reference_time, forecastMonth) first so groupby can operate along a 1-D axis
     # while keeping lat/lon/number intact.
-    stacked = forecast.stack(sample=("time", "forecastMonth"))
+    stacked = forecast.stack(sample=("forecast_reference_time", "forecastMonth"))
     group_mean = stacked.groupby("valid_month").mean(dim=("sample", "number"))
     # group_mean has dims (valid_month, lat, lon)
 
@@ -71,7 +71,7 @@ def _anomaly_per_calendar_month(
 
     if sample_every > 1:
         anom = anom.isel(
-            time=slice(None, None, sample_every),
+            forecast_reference_time=slice(None, None, sample_every),
             number=slice(None, None, sample_every),
         )
     return anom
@@ -97,7 +97,7 @@ def plot_anomaly_scatter(
     )
 
     raw_anom = _anomaly_per_calendar_month(raw).values.ravel()
-    corr_anom = _anomaly_per_calendar_month(corr).values.ravel()
+    corr_anom = _anomaly_per_calendar_month(corr.T.transpose(*raw.dims)).values.ravel()
 
     # Drop NaN pairs
     mask = np.isfinite(raw_anom) & np.isfinite(corr_anom)

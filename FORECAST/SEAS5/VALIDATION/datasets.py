@@ -228,7 +228,7 @@ def load_trio(
 def match_era5_to_forecast(
     forecast: xr.DataArray,
     era5: xr.DataArray,
-    init_coord: str = "time",
+    init_coord: str = "forecast_reference_time",
     lead_coord: str = "forecastMonth",
     lead_offset: int = 0,
 ) -> xr.DataArray:

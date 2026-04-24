@@ -32,12 +32,18 @@ logger = logging.getLogger("pipeline")
 # =============================================================================
 # File naming conventions (centralized to keep steps coherent)
 # =============================================================================
-def era5_raw_path(short_name: str, is_pressure: bool) -> Path:
+def era5_raw_path(short_name: str, is_pressure: bool, year_range : None | tuple(int,int) = None) -> Path:
     suffix = "_pl" if is_pressure else ""
-    return config.ERA5_RAW_DIR / (
-        f"era5_{short_name}{suffix}_"
-        f"{config.CLIMATOLOGY_START_YEAR}-{config.CLIMATOLOGY_END_YEAR}.nc"
-    )
+    if year_range is None:
+        return config.ERA5_RAW_DIR / (
+            f"era5_{short_name}{suffix}_"
+            f"{config.CLIMATOLOGY_START_YEAR}-{config.CLIMATOLOGY_END_YEAR}.nc"
+        )
+    else:
+        return config.ERA5_RAW_DIR / (
+            f"era5_{short_name}{suffix}_"
+            f"{year_range[0]}-{year_range[1]}.nc"
+        )
 
 
 def era5_clim_path(short_name: str, is_pressure: bool) -> Path:
@@ -65,9 +71,13 @@ def corrected_path(short_name: str, is_pressure: bool, years: List[int]) -> Path
 # =============================================================================
 # Step 1: Download ERA5
 # =============================================================================
-def step1_download_era5(overwrite: bool = False):
+def step1_download_era5(overwrite: bool = False, year_range : None | tuple[int,int] = None):
     """Download ERA5 monthly means over the climatology period."""
-    years = list(range(config.CLIMATOLOGY_START_YEAR, config.CLIMATOLOGY_END_YEAR + 1))
+    if year_range is None:
+        years = list(range(config.CLIMATOLOGY_START_YEAR, config.CLIMATOLOGY_END_YEAR + 1))
+    else:
+        years=list(range(year_range[0], year_range[1]))
+
     months = list(range(1, 13))
 
     logger.info("=== Step 1: Download ERA5 (%d-%d) ===", min(years), max(years))
@@ -77,7 +87,7 @@ def step1_download_era5(overwrite: bool = False):
             variable=cds_name,
             years=years,
             months=months,
-            output_path=era5_raw_path(short, is_pressure=False),
+            output_path=era5_raw_path(short, is_pressure=False, year_range=year_range),
             overwrite=overwrite,
         )
 
@@ -87,7 +97,7 @@ def step1_download_era5(overwrite: bool = False):
             pressure_levels=config.SEAS5_PRESSURE_LEVELS,
             years=years,
             months=months,
-            output_path=era5_raw_path(short, is_pressure=True),
+            output_path=era5_raw_path(short, is_pressure=True, year_range=year_range),
             overwrite=overwrite,
         )
 
