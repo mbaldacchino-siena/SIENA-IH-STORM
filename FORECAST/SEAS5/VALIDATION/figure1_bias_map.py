@@ -39,7 +39,11 @@ def compute_raw_bias(
         diff = diff.sel(forecastMonth=leads)
 
     # Collapse time, forecastMonth, number
-    collapse_dims = [d for d in ("time", "forecastMonth", "number") if d in diff.dims]
+    collapse_dims = [
+        d
+        for d in ("forecast_reference_time", "forecastMonth", "number")
+        if d in diff.dims
+    ]
     reducer = {"mean": "mean", "median": "median"}[reduce]
     return getattr(diff, reducer)(dim=collapse_dims)
 
@@ -65,31 +69,39 @@ def plot_bias_map(
     ...               domain={"lat_min": 0, "lat_max": 40,
     ...                       "lon_min": -100, "lon_max": 0})
     """
-    raw, _, era5 = datasets.load_trio(
+    raw, corr, era5 = datasets.load_trio(
         short, years, level_hPa=level_hPa, domain=domain, **load_kw
     )
     bias = compute_raw_bias(raw, era5, lead=lead, reduce=reduce)
+    bias_corr = compute_raw_bias(corr, era5, lead=lead, reduce=reduce)
 
-    if ax is None:
-        _, ax = plt.subplots(figsize=(10, 4))
 
     # Symmetric color range if not specified
     if vmin is None or vmax is None:
         v = float(np.nanmax(np.abs(bias.values)))
         vmin, vmax = -v, v
-
     bias.plot(
-        ax=ax,
+        ax=ax[0],
         cmap=cmap,
         vmin=vmin,
         vmax=vmax,
         cbar_kwargs={"label": f"{reduce} bias ({short})"},
     )
-
+    bias_corr.plot(
+        ax=ax[1],
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        cbar_kwargs={"label": f"{reduce} bias ({short})"},
+    )
     lead_label = "all leads" if lead == "all" else f"lead {lead}"
     level_label = f" @ {level_hPa} hPa" if level_hPa else ""
-    ax.set_title(
+    ax[0].set_title(
         f"Raw SEAS5 - ERA5 {reduce} bias | {short}{level_label} | "
+        f"{min(years)}-{max(years)} | {lead_label}"
+    )
+    ax[1].set_title(
+        f"Corr SEAS5 - ERA5 {reduce} bias | {short}{level_label} | "
         f"{min(years)}-{max(years)} | {lead_label}"
     )
     return ax
