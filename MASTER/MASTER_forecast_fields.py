@@ -149,14 +149,94 @@ def compute_vws(u200, u850, v200, v850):
     return np.sqrt((u200 - u850) ** 2 + (v200 - v850) ** 2)
 
 
-def compute_rh_from_q_t(q, t, pressure_pa=60000.0):
-    """Relative humidity from specific humidity and temperature."""
+def compute_rh_from_q_t(q, t, pressure_pa):
+    """Relative humidity (%) from specific humidity q (kg/kg), temperature T (K),
+    and ambient pressure P (Pa).
+
+    Uses the Bolton (1980) formula for saturation vapour pressure over water:
+        e_s(T) = 611.2 * exp(17.67 * T_c / (T_c + 243.5))     [Pa]
+    with T_c = T - 273.15.
+
+    Mixing ratios:
+        w   = q / (1 - q)
+        w_s = 0.622 * e_s / (P - e_s)
+        RH  = 100 * w / w_s
+
+    Consistency requirement: q, T, and pressure_pa MUST refer to the same
+    pressure level. Feeding (q at 500, T at 500, P=60000) gives garbage
+    because w_s is evaluated at the wrong pressure. Callers should
+    interpolate q and T to the target level (e.g. via `interp_to_pressure`)
+    BEFORE calling this function, and pass the matching pressure.
+
+    Clipped to [5, 99] rather than [0, 100]: monthly-mean RH at 0 or 100
+    is almost always an interpolation artifact, and the GPI formula
+    (H/50)^3 reacts catastrophically to both extremes.
+    """
     t_c = t - 273.15
     es = 611.2 * np.exp(17.67 * t_c / (t_c + 243.5))
     w = q / (1.0 - q)
     ws = 0.622 * es / (pressure_pa - es)
     rh = 100.0 * w / ws
-    return np.clip(rh, 0, 100)
+    return np.clip(rh, 5.0, 99.0)
+
+
+def interp_to_pressure(field_on_levels, levels_hPa, target_hPa):
+    """Linear-in-log-pressure interpolation to a target level.
+
+    Parameters
+    ----------
+    field_on_levels : array, shape (n_levels, ..., lat, lon)
+        Monotonic along axis 0 in the usual atmospheric sense is NOT
+        required — we find the bracketing levels explicitly.
+    levels_hPa : array-like, shape (n_levels,)
+        Pressure of each level in hPa (any order).
+    target_hPa : float
+
+    Returns
+    -------
+    array, shape (..., lat, lon)
+
+    Notes
+    -----
+    Standard practice in atmospheric science is to interpolate in
+    log-pressure because the hydrostatic vertical coordinate is
+    logarithmic in pressure (z ~ -H ln(p/p0)). Linear-in-p would
+    systematically over- or under-weight one side depending on where
+    target_hPa sits relative to the bracket midpoint.
+
+    If target_hPa is exactly equal to one of the available levels,
+    that slice is returned directly (no interpolation).
+
+    If target_hPa is outside the range of available levels, raises
+    ValueError rather than silently extrapolating.
+    """
+    levels = np.asarray(levels_hPa, dtype=float)
+    target = float(target_hPa)
+
+    # Exact match — no interpolation
+    exact = np.where(levels == target)[0]
+    if exact.size:
+        return field_on_levels[int(exact[0])]
+
+    below = levels[levels < target]
+    above = levels[levels > target]
+    if below.size == 0 or above.size == 0:
+        raise ValueError(
+            f"Target pressure {target} hPa outside available levels {sorted(levels)}"
+        )
+    p_lo = below.max()  # larger p = closer to surface ... but we want the
+    p_hi = above.min()  # two levels that bracket the target numerically
+    i_lo = int(np.where(levels == p_lo)[0][0])
+    i_hi = int(np.where(levels == p_hi)[0][0])
+
+    log_lo = np.log(p_lo)
+    log_hi = np.log(p_hi)
+    log_tg = np.log(target)
+    frac = (log_tg - log_lo) / (log_hi - log_lo)
+
+    return field_on_levels[i_lo] + frac * (
+        field_on_levels[i_hi] - field_on_levels[i_lo]
+    )
 
 
 # =========================================================================
@@ -204,8 +284,12 @@ def process_member(
     # Pressure levels
     p_levels = pl.pressure_level.values.astype(float)
     idx_200 = _nearest_level_idx(p_levels, 200)
-    idx_600 = _nearest_level_idx(p_levels, 600)
     idx_850 = _nearest_level_idx(p_levels, 850)
+    # 600 hPa is not in the SEAS5 pressure level list [10, 50, 100, 200,
+    # 300, 400, 500, 700, 850, 925, 1000]. We log-pressure interpolate
+    # between 500 and 700 in `process_member`'s lead loop (needs per-lead
+    # slicing). The nearest-index approach would silently have returned
+    # 500 (first equidistant) and mismatched the downstream RH formula.
 
     n_leads = min(int(pl.sizes["forecastMonth"]), lead_months)
 
@@ -245,20 +329,16 @@ def process_member(
             dst_lats,
             dst_lons,
         )
-        t600 = regrid_to_025(
-            pl_t["t"].isel(pressure_level=idx_600).values,
-            src_lats,
-            src_lons,
-            dst_lats,
-            dst_lons,
-        )
-        q600 = regrid_to_025(
-            pl_t["q"].isel(pressure_level=idx_600).values,
-            src_lats,
-            src_lons,
-            dst_lats,
-            dst_lons,
-        )
+        # t and q at 600 hPa: log-pressure interpolation between the
+        # bracketing SEAS5 levels (500 and 700 hPa). Interpolate at native
+        # resolution FIRST (so we don't interpolate on resampled fields),
+        # then regrid to 0.25°.
+        t_native = pl_t["t"].values  # (pressure_level, lat, lon)
+        q_native = pl_t["q"].values
+        t600_native = interp_to_pressure(t_native, p_levels, 600.0)
+        q600_native = interp_to_pressure(q_native, p_levels, 600.0)
+        t600 = regrid_to_025(t600_native, src_lats, src_lons, dst_lats, dst_lons)
+        q600 = regrid_to_025(q600_native, src_lats, src_lons, dst_lats, dst_lons)
 
         # Surface fields
         sfc_t = sfc.isel(forecastMonth=t_idx)
@@ -685,7 +765,7 @@ if __name__ == "__main__":
     # ---- Step B: Dispatch per-member processing ----
     # Workers open the already-corrected NetCDFs read-only. No download
     # happens in workers; they only extract, regrid, derive, and save.
-    jobs = [m for m in range(args.member)]
+    jobs = [m for m in range(*args.member)]
     n_workers = args.workers or min(len(jobs), mp.cpu_count())
 
     worker_fn = partial(
