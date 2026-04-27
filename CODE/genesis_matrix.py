@@ -18,6 +18,39 @@ from CODE.siena_utils import load_monthly_field, load_field_with_year_fallback
 from scipy.ndimage import zoom
 
 
+# Genesis-prior validity masks for environmental genesis fields.
+# These do NOT redefine the basin boxes used elsewhere.
+# They only limit where GPI is allowed to place genesis probability mass.
+GPI_GENESIS_LAT_BOUNDS = {
+    "NA": (5.0, 40.0),
+    "EP": (5.0, 40.0),
+    "NI": (5.0, 40.0),
+    "WP": (5.0, 40.0),
+    "SI": (-40.0, -5.0),
+    "SP": (-40.0, -5.0),
+}
+
+# Optional stricter sensitivity config.
+GPI_GENESIS_LAT_BOUNDS_STRICT = {
+    **GPI_GENESIS_LAT_BOUNDS,
+    "NA": (5.0, 35.0),
+}
+
+
+def basin_cell_centers(basin, rows, cols):
+    lat0, lat1, lon0, lon1 = BOUNDARIES_BASINS(basin)
+
+    dlat = (lat1 - lat0) / rows
+    dlon = (lon1 - lon0) / cols
+
+    # Grid is stored north-to-south.
+    lat = lat1 - (np.arange(rows) + 0.5) * dlat
+    lon = lon0 + (np.arange(cols) + 0.5) * dlon
+
+    LON, LAT = np.meshgrid(lon, lat)
+    return LAT, LON
+
+
 __location__ = os.path.realpath(os.getcwd())  # TEMP FIX?
 dir_path = __location__
 land_shp_fname = shpreader.natural_earth(
@@ -74,6 +107,39 @@ def BOUNDARIES_BASINS(idx):
         lat0, lat1, lon0, lon1 = 5, 60, 100, 180
 
     return lat0, lat1, lon0, lon1
+
+
+def _genesis_ocean_mask_1deg(basin, shape):
+    rows, cols = shape
+
+    mask_path = os.path.join(
+        __location__, f"Land_ocean_masks/Land_ocean_mask_{basin}.txt"
+    )
+    land10 = np.loadtxt(mask_path)
+
+    # Stored masks include endpoints, e.g. NA is 551 x 1051.
+    # Drop endpoints so we can aggregate exact 10x10 blocks to 1 degree.
+    land10 = land10[: rows * 10, : cols * 10]
+    landfrac = land10.reshape(rows, 10, cols, 10).mean(axis=(1, 3))
+    ocean = landfrac < 0.5
+
+    lat0, lat1, lon0, lon1 = BOUNDARIES_BASINS(basin)
+    lats = lat1 - (np.arange(rows) + 0.5)
+    lons = lon0 + (np.arange(cols) + 0.5)
+    LON, LAT = np.meshgrid(lons, lats)
+
+    # Match the runtime NA/EP Central America split.
+    if basin == "NA":
+        lat_isthmus = 16.0 - 0.571 * (LON - 268.0)
+        pacific_side = (LON >= 255.0) & (LON < 285.0) & (LAT < lat_isthmus)
+        ocean &= ~pacific_side
+
+    elif basin == "EP":
+        lat_isthmus = 16.0 - 0.571 * (LON - 268.0)
+        atlantic_side = (LON >= 255.0) & (LON < 285.0) & (LAT >= lat_isthmus)
+        ocean &= ~atlantic_side
+
+    return ocean
 
 
 def create_5deg_grid(locations, month, basin):
@@ -342,7 +408,7 @@ def build_environmental_genesis_factor(basin, month, phase=None):
     return env
 
 
-def _blend_genesis_with_env(genesis, env, label=""):
+def _blend_genesis_with_env(genesis, env, label="", dump_dir=None):
     """
     Additive blend of observed genesis density with environmental (GPI) field.
 
@@ -368,11 +434,26 @@ def _blend_genesis_with_env(genesis, env, label=""):
     genesis : 2D array, observed genesis density (1-deg grid, possibly sparse)
     env : 2D array, environmental field (GPI or custom), same grid, normalized
     label : str, for logging
+    dump_dir : str, Path, or None
+        If provided, save inputs, outputs, and metadata to this directory:
+            empirical.npy   the observed grid (post-cleaning)
+            gpi.npy         the environmental/GPI grid (post-cleaning)
+            blended.npy     the final mass-restored output
+            metadata.json   {label, w, coverage, n_favorable, n_covered,
+                             threshold, obs_nonzero, original_mass,
+                             w_min, w_max, favorable_pct}
+        Filenames are prefixed by `label` (sanitized) so multiple calls
+        do not overwrite each other. Useful for verifying that the blend
+        is doing what you expect on real data — load the four files and
+        inspect the spatial structure.
 
     Returns
     -------
     blended : 2D array, same shape as genesis, with original total mass preserved
     """
+    import json as _json
+    from pathlib import Path as _Path
+
     rows = min(genesis.shape[0], env.shape[0])
     cols = min(genesis.shape[1], env.shape[1])
     obs = genesis[:rows, :cols].copy()
@@ -383,14 +464,58 @@ def _blend_genesis_with_env(genesis, env, label=""):
     obs = np.nan_to_num(obs, nan=0.0)
     obs[obs < 0] = 0.0
 
+    # Build a sanitized prefix early so we can also dump in the
+    # early-exit branches below (no-blend cases are still informative).
+    def _do_dump(blended_array, w_val, coverage_val, n_fav, n_cov, threshold_val, note):
+        if dump_dir is None:
+            return
+        d = _Path(dump_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        # Sanitize label: replace path-unfriendly chars
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)
+        prefix = f"{safe}__" if safe else ""
+        np.save(d / f"{prefix}empirical.npy", obs)
+        np.save(d / f"{prefix}gpi.npy", gpi)
+        np.save(d / f"{prefix}blended.npy", blended_array)
+        meta = {
+            "label": label,
+            "w": float(w_val) if w_val is not None else None,
+            "coverage": float(coverage_val) if coverage_val is not None else None,
+            "n_favorable": int(n_fav),
+            "n_covered": int(n_cov),
+            "favorable_threshold": float(threshold_val)
+            if threshold_val is not None
+            else None,
+            "obs_nonzero": int((obs > 0).sum()),
+            "obs_total_mass": float(obs.sum()),
+            "gpi_total_mass": float(gpi.sum()),
+            "favorable_pct_of_nonzero_gpi": 25.0,
+            "w_min": 0.05,
+            "w_max": 0.50,
+            "shape": list(obs.shape),
+            "note": note,
+        }
+        with open(d / f"{prefix}metadata.json", "w") as f:
+            _json.dump(meta, f, indent=2)
+
     original_mass = obs.sum()
     if original_mass <= 0 or gpi.sum() <= 0:
+        _do_dump(genesis, None, None, 0, 0, None, "no-op: empty obs or gpi")
         return genesis  # nothing to blend
 
     # Adaptive mixing weight: fraction of GPI-favorable cells unsampled by obs.
     # "Favorable" = top 75% of nonzero GPI cells (bottom 25% are marginal).
     gpi_nonzero = gpi[gpi > 0]
     if len(gpi_nonzero) < 5:
+        _do_dump(
+            genesis,
+            None,
+            None,
+            len(gpi_nonzero),
+            0,
+            None,
+            "no-op: too few nonzero GPI cells",
+        )
         return genesis
 
     threshold = np.percentile(gpi_nonzero, 25)
@@ -425,6 +550,16 @@ def _blend_genesis_with_env(genesis, env, label=""):
         f"  {label}: w={w:.3f} (coverage={coverage:.3f}), "
         f"obs_nonzero={int(observed_mask.sum())}, "
         f"gpi_favorable={int(n_favorable)}"
+    )
+
+    _do_dump(
+        result[:rows, :cols],
+        w,
+        coverage,
+        int(n_favorable),
+        int(n_covered),
+        threshold,
+        "ok",
     )
 
     return result
@@ -465,10 +600,11 @@ def Change_genesis_locations(idx_basin, months, genesis_weighting):
             genesis_empirical = np.array(genesis_grids, copy=True)
 
             np.savetxt(
-                os.path.join(__location__,
-                             "GRID_GENESIS_EMPIRICAL_MATRIX_{}_{}.txt".format(idx, month),
+                os.path.join(
+                    __location__,
+                    "GRID_GENESIS_EMPIRICAL_MATRIX_{}_{}.txt".format(idx, month),
                 ),
-                genesis_empirical,              
+                genesis_empirical,
             )
 
             if genesis_mode == "GPI-MIX":
@@ -500,8 +636,12 @@ def Change_genesis_locations(idx_basin, months, genesis_weighting):
 
             # Additive blend: observed genesis + environmental prior
             if env_weight is not None:
+                _dump_dir = os.environ.get("SIENA_BLEND_DUMP_DIR")
                 genesis_grids = _blend_genesis_with_env(
-                    genesis_grids, env_weight, label=f"pooled {basin}/{month}"
+                    genesis_grids,
+                    env_weight,
+                    label=f"pooled_{basin}_{month}",
+                    dump_dir=_dump_dir,
                 )
 
             np.savetxt(
@@ -562,10 +702,12 @@ def Change_genesis_locations(idx_basin, months, genesis_weighting):
 
                         # Additive blend: observed phase genesis + phase-specific GPI
                         if env_phase is not None:
+                            _dump_dir = os.environ.get("SIENA_BLEND_DUMP_DIR")
                             genesis_phase = _blend_genesis_with_env(
                                 genesis_phase,
                                 env_phase,
-                                label=f"{phase} {basin}/{month}",
+                                label=f"phase_{phase}_{basin}_{month}",
+                                dump_dir=_dump_dir,
                             )
 
                         np.savetxt(
@@ -641,7 +783,7 @@ def compute_gpi_field(basin, month, phase=None, env_year=None):
     try:
         vpot_global = load_field_with_year_fallback(
             __location__, "VMAX_PI", month, phase=phase_str, env_year=env_year
-        ) 
+        )
     except Exception:
         print(f"  GPI: Missing VMAX_PI for month={month}, phase={phase_str}")
         return None
@@ -685,7 +827,11 @@ def compute_gpi_field(basin, month, phase=None, env_year=None):
     f_coriolis = 2.0 * 7.2921e-5 * np.sin(np.deg2rad(lat_1d))
     f_2d = f_coriolis[:, None] * np.ones((yg, xg))
     eta = np.abs(vort + f_2d)
-    eta = np.maximum(eta, 2e-6)  # floor near equator
+    # eta = np.maximum(eta, 2e-6)  # floor near equator
+    # Replace line 687-688 with:
+    eta = np.minimum(eta, 5e-5)  # Tippett 2011 clipping
+    eta = np.maximum(eta, 1e-7)  # avoid zero
+    print(eta.max())
 
     # RH handling (could be fraction or %)
     rh = np.nan_to_num(rh, nan=50.0)
@@ -701,13 +847,24 @@ def compute_gpi_field(basin, month, phase=None, env_year=None):
     pi_term = (np.clip(vpot, 0.0, 120.0) / 70.0) ** 3
     shear_term = (1.0 + 0.1 * np.clip(vws, 0.0, 50.0)) ** (-2)
 
+    LAT, LON = basin_cell_centers(basin, yg, xg)
+
     gpi = vort_term * rh_term * pi_term * shear_term
     gpi = np.nan_to_num(gpi, nan=0.0, posinf=0.0, neginf=0.0)
     gpi[gpi < 0] = 0.0
 
-    # Normalize to unit sum
-    s = gpi.sum()
-    if s > 0:
-        gpi = gpi / s
+    # Apply land/ocean mask before this if you have it available here.
 
-    return gpi
+    lat_bounds = GPI_GENESIS_LAT_BOUNDS.get(basin)
+    if lat_bounds is not None:
+        lat_min, lat_max = lat_bounds
+        gpi[(LAT < lat_min) | (LAT > lat_max)] = 0.0
+
+    ocean = _genesis_ocean_mask_1deg(basin, gpi.shape)
+    gpi[~ocean] = 0.0
+
+    s = gpi.sum()
+    if s <= 0:
+        return None
+
+    return gpi / s

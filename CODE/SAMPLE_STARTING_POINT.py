@@ -41,6 +41,7 @@ def Check_EP_formation(lat, lon):
     lat_isthmus = 16.0 - 0.571 * (lon - 268.0)
     return lat >= lat_isthmus
 
+
 def Check_if_landfall(lat, lon, basin, land_mask):
     s, monthdummy, lat0_WMO, lat1_WMO, lon0_WMO, lon1_WMO = Basins_WMO(basin)
     x = int(10 * (lon - lon0_WMO))
@@ -152,7 +153,9 @@ def Startingpoint(
         # Using the runtime blend in classic mode would silently bypass that choice.
         if env_year is not None and month_phases is not None:
             empirical_path = empirical_path_pooled
-            if empirical_path_phase is not None and os.path.exists(empirical_path_phase):
+            if empirical_path_phase is not None and os.path.exists(
+                empirical_path_phase
+            ):
                 empirical_path = empirical_path_phase
 
             if os.path.exists(empirical_path):
@@ -160,10 +163,17 @@ def Startingpoint(
                 env_runtime = _get_runtime_gpi(month, effective_phase, env_year)
 
                 if env_runtime is not None:
+                    # Optional dump for blend inspection: set env var
+                    # SIENA_BLEND_DUMP_DIR to a directory path and the four
+                    # arrays (empirical, gpi, blended) plus metadata.json
+                    # will be saved per (basin, month, phase, env_year)
+                    # tuple. Off by default — zero overhead.
+                    _dump_dir = os.environ.get("SIENA_BLEND_DUMP_DIR")
                     raw = _blend_genesis_with_env(
                         raw_empirical,
                         env_runtime,
-                        label=f"runtime {basin}/{month}/{effective_phase}/{env_year}",
+                        label=f"runtime_{basin}_{month}_{effective_phase}_{env_year}",
+                        dump_dir=_dump_dir,
                     )
                     weighted_list_index, grid_copy = _build_weighted_index(raw)
 
@@ -175,7 +185,7 @@ def Startingpoint(
         if len(weighted_list_index) == 0:
             raw = np.loadtxt(grid_path_pooled)
             weighted_list_index, grid_copy = _build_weighted_index(raw)
-        
+
         if len(weighted_list_index) == 0:
             raise RuntimeError(
                 f"No valid genesis sampling weights for basin={basin}, month={month}, "
