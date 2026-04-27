@@ -32,7 +32,9 @@ logger = logging.getLogger("pipeline")
 # =============================================================================
 # File naming conventions (centralized to keep steps coherent)
 # =============================================================================
-def era5_raw_path(short_name: str, is_pressure: bool, year_range : None | tuple(int,int) = None) -> Path:
+def era5_raw_path(
+    short_name: str, is_pressure: bool, year_range: None | tuple(int, int) = None
+) -> Path:
     suffix = "_pl" if is_pressure else ""
     if year_range is None:
         return config.ERA5_RAW_DIR / (
@@ -41,8 +43,7 @@ def era5_raw_path(short_name: str, is_pressure: bool, year_range : None | tuple(
         )
     else:
         return config.ERA5_RAW_DIR / (
-            f"era5_{short_name}{suffix}_"
-            f"{year_range[0]}-{year_range[1]}.nc"
+            f"era5_{short_name}{suffix}_{year_range[0]}-{year_range[1]}.nc"
         )
 
 
@@ -71,12 +72,16 @@ def corrected_path(short_name: str, is_pressure: bool, years: List[int]) -> Path
 # =============================================================================
 # Step 1: Download ERA5
 # =============================================================================
-def step1_download_era5(overwrite: bool = False, year_range : None | tuple[int,int] = None):
+def step1_download_era5(
+    overwrite: bool = False, year_range: None | tuple[int, int] = None
+):
     """Download ERA5 monthly means over the climatology period."""
     if year_range is None:
-        years = list(range(config.CLIMATOLOGY_START_YEAR, config.CLIMATOLOGY_END_YEAR + 1))
+        years = list(
+            range(config.CLIMATOLOGY_START_YEAR, config.CLIMATOLOGY_END_YEAR + 1)
+        )
     else:
-        years=list(range(year_range[0], year_range[1]))
+        years = list(range(year_range[0], year_range[1]))
 
     months = list(range(1, 13))
 
