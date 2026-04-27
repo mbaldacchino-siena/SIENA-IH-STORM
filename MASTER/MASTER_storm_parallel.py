@@ -205,6 +205,7 @@ def _run_single_job_forecast(
         f"{' [year resampling]' if env_pool else ''}"
     )
     t0 = time.time()
+    print(active_months)
 
     TC_data = []
     for year in range(years_per_loop):
@@ -315,10 +316,12 @@ def main():
 
     parser.add_argument(
         "--forecast",
-        type=list[str],
+        nargs="+",
         default=None,
-        help="Path to forecast_config.json. Enables seasonal forecast mode. "
-        "When set, --phase is ignored (phases come from the config).",
+        metavar="CONFIG.json",
+        help="One or more forecast_config.json paths (one per ensemble "
+        "member). Enables seasonal forecast mode. When set, --phase is "
+        "ignored (phases come from each config's month_phases).",
     )
 
     args = parser.parse_args()
