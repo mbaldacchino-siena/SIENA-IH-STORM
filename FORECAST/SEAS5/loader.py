@@ -39,9 +39,11 @@ logger = logging.getLogger(__name__)
 def climatology_is_built() -> bool:
     """Check whether all ERA5 climatology files exist for the configured period."""
     for _, short in config.SINGLE_LEVEL_VARS.items():
+        print(pipeline.era5_clim_path(short, is_pressure=False))
         if not pipeline.era5_clim_path(short, is_pressure=False).exists():
             return False
     for _, short in config.PRESSURE_LEVEL_VARS.items():
+        print(pipeline.era5_clim_path(short, is_pressure=True))
         if not pipeline.era5_clim_path(short, is_pressure=True).exists():
             return False
     return True
@@ -104,7 +106,41 @@ def prepare_corrected_for_init(
     ds_pl = _select_init(ds_pl, init_date)
     ds_sfc = _select_init(ds_sfc, init_date)
 
+    # Defensive: enforce [0, 360) longitude convention to match the rest of
+    # SIENA-IH-STORM (training-side env files, Monthly_mean_*.nc, the storm
+    # generator's `lon % 360.0` indexing). If the source files happened to be
+    # in [-180, 180] (e.g. older runs or a regional DOMAIN setup), this fixes
+    # the mismatch before downstream regridding produces NaN over the western
+    # hemisphere. See FORECAST/SEAS5/config.py for context.
+    ds_pl = _normalize_longitude_0_360(ds_pl)
+    ds_sfc = _normalize_longitude_0_360(ds_sfc)
+
     return ds_pl, ds_sfc
+
+
+def _normalize_longitude_0_360(ds: xr.Dataset) -> xr.Dataset:
+    """Ensure longitude is in [0, 360) and the dataset is sorted by it.
+
+    No-op if longitudes are already non-negative and sorted. Handles both
+    `longitude` and `lon` coordinate names.
+    """
+    lon_name = (
+        "longitude"
+        if "longitude" in ds.coords
+        else ("lon" if "lon" in ds.coords else None)
+    )
+    if lon_name is None:
+        return ds
+
+    lon = ds[lon_name].values
+    if lon.min() >= 0 and lon.max() < 360:
+        return ds  # already in [0, 360); no work needed
+
+    # Shift negatives into [0, 360) and sort
+    new_lon = np.where(lon < 0, lon + 360.0, lon)
+    ds = ds.assign_coords({lon_name: new_lon}).sortby(lon_name)
+    logger.info("Normalized longitude convention to [0, 360) for %s", lon_name)
+    return ds
 
 
 # =============================================================================

@@ -22,14 +22,32 @@ FORECAST_START_YEAR = 2017
 FORECAST_END_YEAR = 2026
 
 # =============================================================================
-# Spatial domain (global — covers all TC basins)
+# Spatial domain
 # =============================================================================
-# CDS `area` format is [N, W, S, E]. We build it from this dict.
+# IMPORTANT: longitude convention
+# ERA5 and SEAS5 on CDS return DIFFERENT longitude conventions depending on
+# whether the `area` parameter is set:
+#   - No `area` (global request)        -> longitudes in [0, 360)   <- our pick
+#   - `area = [N, W, S, E]` with W < 0  -> longitudes in [-180, 180]
+#
+# The rest of the SIENA-IH-STORM codebase (training-side env files,
+# Monthly_mean_*.nc, the storm-generator sampling code in
+# CODE/SAMPLE_TC_MOVEMENT.py and CODE/SAMPLE_TC_PRESSURE.py which uses
+# `lon % 360.0`) operates in [0, 360). Mixing conventions silently produces
+# NaN over the western hemisphere after regridding (the symptom: missing
+# values across the whole Atlantic and Americas in saved env_yearly files).
+#
+# We therefore commit to [0, 360) at the data-load boundary. To get this
+# from CDS, set DOMAIN["global"] = True below (omit the `area` parameter)
+# OR, if you need a regional download, set lon_min/lon_max explicitly in
+# [0, 360] form (e.g. lon_min=260, lon_max=20 for the Atlantic, with
+# lon_max < lon_min meaning "wraps the dateline").
 DOMAIN = {
-    "lat_max": 60,
-    "lat_min": -60,
-    "lon_min": -180,
-    "lon_max": 180,
+    "global": True,  # omit `area` from CDS request, get full [0, 360)
+    "lat_max": 90,  # used only if global=False
+    "lat_min": -90,
+    "lon_min": 0,
+    "lon_max": 360,
 }
 
 # =============================================================================
@@ -82,7 +100,7 @@ LEADTIME_MONTHS = [1, 2, 3, 4, 5, 6]
 # =============================================================================
 # Paths
 # =============================================================================
-DATA_DIR = Path("./data")
+DATA_DIR = Path("./forecast_data")
 ERA5_RAW_DIR = DATA_DIR / "era5_raw"  # raw monthly ERA5 downloads
 ERA5_CLIM_DIR = DATA_DIR / "era5_climatology"  # ERA5 monthly climatology (reusable)
 SEAS5_ANOMALY_DIR = DATA_DIR / "seas5_anomaly"  # SEAS5 anomaly downloads from CDS
@@ -95,6 +113,17 @@ for _d in (ERA5_RAW_DIR, ERA5_CLIM_DIR, SEAS5_ANOMALY_DIR, CORRECTED_DIR):
 # =============================================================================
 # Helpers
 # =============================================================================
-def cds_area(domain: dict = DOMAIN) -> list:
-    """Convert domain dict to CDS `area` format [N, W, S, E]."""
+def cds_area(domain: dict = DOMAIN):
+    """Return the CDS `area` value for a request.
+
+    Returns
+    -------
+    None if domain['global'] is True (caller should omit the `area` key
+    from the CDS request, which yields a full-globe grid in [0, 360)
+    longitude convention).
+
+    Otherwise, returns [N, W, S, E] for use as the CDS `area` parameter.
+    """
+    if domain.get("global", False):
+        return None
     return [domain["lat_max"], domain["lon_min"], domain["lat_min"], domain["lon_max"]]

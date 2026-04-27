@@ -26,6 +26,20 @@ def _client() -> cdsapi.Client:
     return cdsapi.Client(quiet=False)
 
 
+def _with_area(request: dict, domain: dict) -> dict:
+    """Add the CDS `area` key to a request dict, but only if domain is regional.
+
+    For a global request, omitting `area` yields longitudes in [0, 360),
+    which is the convention the rest of SIENA-IH-STORM uses. Including
+    `area` with W<0 would yield [-180, 180] and break grid alignment with
+    Monthly_mean_*.nc downstream.
+    """
+    area = config.cds_area(domain)
+    if area is not None:
+        request["area"] = area
+    return request
+
+
 # =============================================================================
 # ERA5 downloads (raw monthly means, for building climatology)
 # =============================================================================
@@ -48,15 +62,17 @@ def download_era5_single_level(
     logger.info("Downloading ERA5 %s (%d years)", variable, len(years))
     _client().retrieve(
         "reanalysis-era5-single-levels-monthly-means",
-        {
-            "product_type": "monthly_averaged_reanalysis",
-            "variable": variable,
-            "year": [str(y) for y in years],
-            "month": [f"{m:02d}" for m in months],
-            "time": "00:00",
-            "area": config.cds_area(domain),
-            "format": "netcdf",
-        },
+        _with_area(
+            {
+                "product_type": "monthly_averaged_reanalysis",
+                "variable": variable,
+                "year": [str(y) for y in years],
+                "month": [f"{m:02d}" for m in months],
+                "time": "00:00",
+                "format": "netcdf",
+            },
+            domain,
+        ),
         str(output_path),
     )
     return output_path
@@ -87,16 +103,18 @@ def download_era5_pressure_level(
     )
     _client().retrieve(
         "reanalysis-era5-pressure-levels-monthly-means",
-        {
-            "product_type": "monthly_averaged_reanalysis",
-            "variable": variable,
-            "pressure_level": [str(p) for p in pressure_levels],
-            "year": [str(y) for y in years],
-            "month": [f"{m:02d}" for m in months],
-            "time": "00:00",
-            "area": config.cds_area(domain),
-            "format": "netcdf",
-        },
+        _with_area(
+            {
+                "product_type": "monthly_averaged_reanalysis",
+                "variable": variable,
+                "pressure_level": [str(p) for p in pressure_levels],
+                "year": [str(y) for y in years],
+                "month": [f"{m:02d}" for m in months],
+                "time": "00:00",
+                "format": "netcdf",
+            },
+            domain,
+        ),
         str(output_path),
     )
     return output_path
@@ -143,17 +161,19 @@ def download_seas5_single_level_anomaly(
     )
     _client().retrieve(
         "seasonal-postprocessed-single-levels",
-        {
-            "originating_centre": "ecmwf",
-            "system": "51",
-            "variable": anomaly_var,
-            "product_type": "monthly_mean",
-            "year": [str(y) for y in years],
-            "month": [f"{m:02d}" for m in init_months],
-            "leadtime_month": [str(lt) for lt in leadtime_months],
-            "area": config.cds_area(domain),
-            "format": "netcdf",
-        },
+        _with_area(
+            {
+                "originating_centre": "ecmwf",
+                "system": "51",
+                "variable": anomaly_var,
+                "product_type": "monthly_mean",
+                "year": [str(y) for y in years],
+                "month": [f"{m:02d}" for m in init_months],
+                "leadtime_month": [str(lt) for lt in leadtime_months],
+                "format": "netcdf",
+            },
+            domain,
+        ),
         str(output_path),
     )
     return output_path
@@ -186,18 +206,20 @@ def download_seas5_pressure_level_anomaly(
     )
     _client().retrieve(
         "seasonal-postprocessed-pressure-levels",
-        {
-            "originating_centre": "ecmwf",
-            "system": "51",
-            "variable": anomaly_var,
-            "pressure_level": [str(p) for p in pressure_levels],
-            "product_type": "monthly_mean",
-            "year": [str(y) for y in years],
-            "month": [f"{m:02d}" for m in init_months],
-            "leadtime_month": [str(lt) for lt in leadtime_months],
-            "area": config.cds_area(domain),
-            "format": "netcdf",
-        },
+        _with_area(
+            {
+                "originating_centre": "ecmwf",
+                "system": "51",
+                "variable": anomaly_var,
+                "pressure_level": [str(p) for p in pressure_levels],
+                "product_type": "monthly_mean",
+                "year": [str(y) for y in years],
+                "month": [f"{m:02d}" for m in init_months],
+                "leadtime_month": [str(lt) for lt in leadtime_months],
+                "format": "netcdf",
+            },
+            domain,
+        ),
         str(output_path),
     )
     return output_path
