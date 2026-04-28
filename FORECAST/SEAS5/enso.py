@@ -133,7 +133,7 @@ def load_observed_monthly(
     """
     if source == "psl":
         try:
-            from . import psl_oni
+            import FORECAST.psl_oni as psl_oni
         except ImportError:  # pragma: no cover
             import psl_oni
         try:
