@@ -55,17 +55,21 @@ def era5_clim_path(short_name: str, is_pressure: bool) -> Path:
     )
 
 
-def seas5_anomaly_path(short_name: str, is_pressure: bool, years: List[int]) -> Path:
+def seas5_anomaly_path(
+    short_name: str, is_pressure: bool, years: List[int], months: List[int]
+) -> Path:
     suffix = "_pl" if is_pressure else ""
     return config.SEAS5_ANOMALY_DIR / (
-        f"seas5anom_{short_name}{suffix}_{min(years)}-{max(years)}.nc"
+        f"seas5anom_{short_name}{suffix}_{min(months)}_{min(years)}-{max(months)}_{max(years)}.nc"
     )
 
 
-def corrected_path(short_name: str, is_pressure: bool, years: List[int]) -> Path:
+def corrected_path(
+    short_name: str, is_pressure: bool, years: List[int], months: List[int]
+) -> Path:
     suffix = "_pl" if is_pressure else ""
     return config.CORRECTED_DIR / (
-        f"seas5corrected_{short_name}{suffix}_{min(years)}-{max(years)}.nc"
+        f"seas5corrected_{short_name}{suffix}_{min(months)}_{min(years)}-{max(months)}_{max(years)}.nc"
     )
 
 
@@ -179,7 +183,9 @@ def step3_download_seas5(
             years=years,
             init_months=init_months,
             leadtime_months=leadtime_months,
-            output_path=seas5_anomaly_path(short, is_pressure=False, years=years),
+            output_path=seas5_anomaly_path(
+                short, is_pressure=False, years=years, months=init_months
+            ),
             overwrite=overwrite,
         )
 
@@ -190,7 +196,9 @@ def step3_download_seas5(
             years=years,
             init_months=init_months,
             leadtime_months=leadtime_months,
-            output_path=seas5_anomaly_path(short, is_pressure=True, years=years),
+            output_path=seas5_anomaly_path(
+                short, is_pressure=True, years=years, months=init_months
+            ),
             overwrite=overwrite,
         )
 
@@ -200,6 +208,7 @@ def step3_download_seas5(
 # =============================================================================
 def step4_apply_correction(
     years: List[int] = None,
+    months: List[int] = None,
     overwrite: bool = False,
 ):
     """Regrid ERA5 climatology to SEAS5 grid and apply delta correction."""
@@ -212,17 +221,22 @@ def step4_apply_correction(
         bias_correction.correct_dataset(
             era5_clim_file=era5_clim_path(short, is_pressure=False),
             seas5_anomaly_file=seas5_anomaly_path(
-                short, is_pressure=False, years=years
+                short,
+                is_pressure=False,
+                years=years,
+                months=months,
             ),
-            output_file=corrected_path(short, is_pressure=False, years=years),
+            output_file=corrected_path(short, is_pressure=False, years=years, months=months),
             overwrite=overwrite,
         )
 
     for _, short in config.PRESSURE_LEVEL_VARS.items():
         bias_correction.correct_dataset(
             era5_clim_file=era5_clim_path(short, is_pressure=True),
-            seas5_anomaly_file=seas5_anomaly_path(short, is_pressure=True, years=years),
-            output_file=corrected_path(short, is_pressure=True, years=years),
+            seas5_anomaly_file=seas5_anomaly_path(
+                short, is_pressure=True, years=years, months=months
+            ),
+            output_file=corrected_path(short, is_pressure=True, years=years, months=months),
             overwrite=overwrite,
         )
 

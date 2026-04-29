@@ -98,10 +98,10 @@ def prepare_corrected_for_init(
         leadtime_months=leadtime_months,
         overwrite=overwrite_correction,
     )
-    pipeline.step4_apply_correction(years=years, overwrite=overwrite_correction)
+    pipeline.step4_apply_correction(years=years,months=init_months, overwrite=overwrite_correction)
 
-    ds_pl = _load_merged_pressure_level(years)
-    ds_sfc = _load_merged_single_level(years)
+    ds_pl = _load_merged_pressure_level(years=years, months=init_months)
+    ds_sfc = _load_merged_single_level(years=years, months=init_months)
 
     # Filter to just this init date (in case pipeline produced multi-year file)
     ds_pl = _select_init(ds_pl, init_date)
@@ -147,11 +147,11 @@ def _normalize_longitude_0_360(ds: xr.Dataset) -> xr.Dataset:
 # =============================================================================
 # Helpers to load and merge per-variable files
 # =============================================================================
-def _load_merged_pressure_level(years: List[int]) -> xr.Dataset:
+def _load_merged_pressure_level(years: List[int], months: List[int]) -> xr.Dataset:
     """Merge per-variable pressure-level corrected files into one dataset."""
     pieces = []
     for cds_name, short in config.PRESSURE_LEVEL_VARS.items():
-        p = pipeline.corrected_path(short, is_pressure=True, years=years)
+        p = pipeline.corrected_path(short, is_pressure=True, years=years, months=months)
         if not p.exists():
             raise FileNotFoundError(f"Corrected file missing: {p}")
         ds = xr.open_dataset(p)
@@ -162,11 +162,11 @@ def _load_merged_pressure_level(years: List[int]) -> xr.Dataset:
     return merged
 
 
-def _load_merged_single_level(years: List[int]) -> xr.Dataset:
+def _load_merged_single_level(years: List[int], months: List[int]) -> xr.Dataset:
     """Merge per-variable single-level corrected files into one dataset."""
     pieces = []
     for cds_name, short in config.SINGLE_LEVEL_VARS.items():
-        p = pipeline.corrected_path(short, is_pressure=False, years=years)
+        p = pipeline.corrected_path(short, is_pressure=False, years=years, months=months)
         if not p.exists():
             raise FileNotFoundError(f"Corrected file missing: {p}")
         ds = xr.open_dataset(p)
