@@ -56,6 +56,7 @@ def ensure_climatology(overwrite: bool = False) -> None:
         return
     logger.info("ERA5 climatology missing — running download + build")
     pipeline.step1_download_era5(overwrite=overwrite)
+    pipeline.step1b_download_era5_for_oni(overwrite=overwrite)
     pipeline.step2_build_climatology(overwrite=overwrite)
 
 
@@ -245,18 +246,18 @@ def _select_init(ds: xr.Dataset, init_date: str) -> xr.Dataset:
 # =============================================================================
 # Utility: load ERA5 SST climatology for ENSO computation
 # =============================================================================
-def load_era5_sst_climatology() -> xr.DataArray:
+def load_era5_sst_climatology_oni() -> xr.DataArray:
     """Load the ERA5 SST monthly climatology produced by step2.
 
     Used by the ENSO module to compute Niño 3.4 anomalies from corrected SST
     (the same climatology baseline, so anomalies are consistent).
     """
-    p = pipeline.era5_clim_path("sst", is_pressure=False)
+    p = config.ERA5_CLIM_DIR / "era5_clim_sst_oni_1991-2020.nc"
     if not p.exists():
         raise FileNotFoundError(
             f"ERA5 SST climatology missing: {p}. Run ensure_climatology() first."
         )
-    ds = xr.open_dataset(p)
+    ds = _normalize_longitude_0_360(xr.open_dataset(p))
     # Pick the SST variable regardless of CDS-assigned name
     for cand in ("sst", "sea_surface_temperature"):
         if cand in ds.data_vars:
