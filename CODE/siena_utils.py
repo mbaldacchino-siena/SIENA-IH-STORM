@@ -513,7 +513,6 @@ def blended_genesis(
     storms_per_year : int
     genesis_month_list : list of int (one entry per storm)
     """
-    from siena_utils import PHASE_TO_CODE
 
     # Step 0: historical monthly weights per phase
     monthly_weights = compute_monthly_genesis_weights(
