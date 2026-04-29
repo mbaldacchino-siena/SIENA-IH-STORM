@@ -530,7 +530,7 @@ def build_phase_schedule_from_seas5(
         if dim in sst.dims and sst.sizes[dim] == 1:
             sst = sst.squeeze(dim)
 
-    era5_sst_clim = seas5_loader.load_era5_sst_climatology()
+    era5_sst_clim = seas5_loader.load_era5_sst_climatology_oni()
 
     csv_full_path = (
         os.path.join(__location__, climate_index_path) if climate_index_path else None
@@ -543,6 +543,7 @@ def build_phase_schedule_from_seas5(
         csv_path=csv_full_path,
         observed_source=observed_source,
         threshold=threshold,
+        member=member_idx,
     )
 
 

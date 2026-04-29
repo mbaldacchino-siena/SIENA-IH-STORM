@@ -107,6 +107,25 @@ def step1_download_era5(
         )
 
 
+def step1b_download_era5_for_oni(overwrite=False):
+    """Download ERA5 SST 1991-2020 specifically for ONI-style classification.
+    This is a separate climatology from the 1993-2016 used for bias correction."""
+
+    cds_download.download_era5_single_level(
+        variable="sea_surface_temperature",
+        years=list(range(1991, 2021)),
+        months=list(range(1, 13)),
+        output_path=config.ERA5_RAW_DIR / "era5_sst_oni_1991-2020.nc",
+        overwrite=overwrite,
+    )
+
+    climatology.build_era5_climatology(
+        input_file=config.ERA5_RAW_DIR / "era5_sst_oni_1991-2020.nc",
+        output_file=config.ERA5_CLIM_DIR / "era5_clim_sst_oni_1991-2020.nc",
+        overwrite=overwrite,
+    )
+
+
 # =============================================================================
 # Step 2: Build ERA5 climatology
 # =============================================================================

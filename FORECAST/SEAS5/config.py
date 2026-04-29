@@ -16,6 +16,10 @@ from pathlib import Path
 CLIMATOLOGY_START_YEAR = 1993
 CLIMATOLOGY_END_YEAR = 2016
 
+# ENSO CLIMATOLOGY
+ENSO_CLIMATOLOGY_START_YEAR = 1991
+ENSO_CLIMATOLOGY_END_YEAR = 2020
+
 # SEAS5 went operational in November 2017. Use 2017 onwards for operational
 # forecast archive. Update FORECAST_END_YEAR as needed.
 FORECAST_START_YEAR = 2017
