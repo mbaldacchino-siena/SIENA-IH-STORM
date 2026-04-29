@@ -52,6 +52,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 import xarray as xr
+from json import dump
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +194,8 @@ load_observed_oni = load_observed_monthly
 # =============================================================================
 # SEAS5-derived monthly Niño 3.4 anomaly
 # =============================================================================
+
+
 def seas5_monthly_nino34_anomaly(
     corrected_sst: xr.DataArray,
     era5_sst_clim: xr.DataArray,
@@ -201,32 +204,18 @@ def seas5_monthly_nino34_anomaly(
 ) -> Dict[int, float]:
     """Monthly Niño 3.4 anomaly from bias-corrected SEAS5 SST.
 
-    Subtracts the ERA5 monthly climatology at the Niño 3.4 area-mean level.
-    Result is a raw monthly anomaly (NOT yet a 3-month mean).
-
-    Parameters
-    ----------
-    corrected_sst : xr.DataArray
-        Bias-corrected SST, dims include (forecastMonth, latitude, longitude).
-        Already reduced to a single init time and single member.
-    era5_sst_clim : xr.DataArray
-        ERA5 monthly SST climatology with `month` dim (1-12), on SAME grid.
-    init_month : int
-    lead_offset : int
-        SEAS5 lead convention. 0 (default) for instantaneous monthly means
-        on the `seasonal-monthly-*` and `seasonal-postprocessed-*` CDS
-        datasets — see module docstring.
-
-    Returns
-    -------
-    dict : {valid_month: monthly_anomaly_K}
+    Returns the area-mean SST anomaly in the Niño 3.4 region for each
+    valid forecast month. The forecast and climatology can live on
+    different grids — each area mean is computed using its own coords.
     """
-    if "latitude" in corrected_sst.coords:
-        lats = corrected_sst.latitude.values
-        lons = corrected_sst.longitude.values
-    else:
-        lats = corrected_sst.lat.values
-        lons = corrected_sst.lon.values
+
+    def _coords(da):
+        if "latitude" in da.coords:
+            return da.latitude.values, da.longitude.values
+        return da.lat.values, da.lon.values
+
+    fcst_lats, fcst_lons = _coords(corrected_sst)
+    clim_lats, clim_lons = _coords(era5_sst_clim)
 
     n_leads = int(corrected_sst.sizes["forecastMonth"])
     anomalies: Dict[int, float] = {}
@@ -238,8 +227,8 @@ def seas5_monthly_nino34_anomaly(
         sst_slice = corrected_sst.isel(forecastMonth=lead_idx).values
         clim_slice = era5_sst_clim.sel(month=valid_month).values
 
-        a_fcst = nino34_area_mean(sst_slice, lats, lons)
-        a_clim = nino34_area_mean(clim_slice, lats, lons)
+        a_fcst = nino34_area_mean(sst_slice, fcst_lats, fcst_lons)
+        a_clim = nino34_area_mean(clim_slice, clim_lats, clim_lons)
         if np.isfinite(a_fcst) and np.isfinite(a_clim):
             anomalies[valid_month] = a_fcst - a_clim
 
@@ -428,6 +417,7 @@ def phase_schedule_from_corrected(
     threshold: float = DEFAULT_THRESHOLD,
     lead_offset: int = DEFAULT_LEAD_OFFSET,
     verbose: bool = True,
+    member=None,
 ) -> Dict[int, str]:
     """Build 12-month phase schedule from bias-corrected SEAS5 + observed.
 
@@ -458,6 +448,7 @@ def phase_schedule_from_corrected(
         instantaneous monthly means. Set to 1 only if you've verified your
         downloaded files use the alternative convention.
     verbose : bool
+    member : optional, if set, export ONI 3.4
     """
     target_year = int(init_date[:4])
     init_month = int(init_date[5:7])
@@ -486,7 +477,13 @@ def phase_schedule_from_corrected(
         )
 
     merged = merge_monthly_streams(observed, seas5)
+    if member is not None:
+        with open(f"forecast_configs/oni_merged_m{member}.json", "w") as f:
+            dump(merged, f, indent=2)
     centered = centered_oni_from_merged(merged)
+    if member is not None:
+        with open(f"forecast_configs/oni_m{member}.json", "w") as f:
+            dump(centered, f, indent=2)
     sources = label_centered_oni_sources(observed, seas5, centered)
 
     if verbose:
