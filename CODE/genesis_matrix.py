@@ -65,8 +65,6 @@ def is_land(x, y):
     return land.contains(sgeom.Point(x, y))
 
 
-# print(is_land(150,20))
-
 
 def create_mask(basin):
     stepsize = 10
@@ -257,7 +255,6 @@ def Change_genesis_locations_STORM():
 
     for basin, idx in zip(["EP", "NA", "NI", "SI", "SP", "WP"], range(0, 6)):
         for month in monthsall[basin]:
-            print(basin, idx)
             matrix_dict = create_5deg_grid(locations[idx], month, basin)
             genesis_grids = create_1deg_grid(matrix_dict, basin, month)
             np.savetxt(
@@ -831,7 +828,6 @@ def compute_gpi_field(basin, month, phase=None, env_year=None):
     # Replace line 687-688 with:
     eta = np.minimum(eta, 5e-5)  # Tippett 2011 clipping
     eta = np.maximum(eta, 1e-7)  # avoid zero
-    print(eta.max())
 
     # RH handling (could be fraction or %)
     rh = np.nan_to_num(rh, nan=50.0)
