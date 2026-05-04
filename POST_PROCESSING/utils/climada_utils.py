@@ -154,7 +154,7 @@ def from_simulations_storm_mod(path, years=None) -> TCTracks:
                     "max_sustained_wind_unit": "kn",
                     "central_pressure_unit": "mb",
                     "name": track_name,
-                    "sid": track_name,
+                    "sid": idx[0],
                     "orig_event_flag": True,
                     "data_provider": "STORM",
                     "id_no": idx[0] * 1000 + idx[1],
