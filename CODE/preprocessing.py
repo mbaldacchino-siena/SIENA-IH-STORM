@@ -455,18 +455,39 @@ def TC_variables(
 
             if month in monthsall[idx]:
                 months[idx].append(month)
-                genesis_wind[idx][month].append(windlist[i][0])
-                genesis_dpres[idx][month].append(preslist[i][1] - preslist[i][0])
-                genesis_pressure[idx][month].append(preslist[i][0])
-                genesis_loc[idx][month].append([latlist[i][0], lonlist[i][0]])
+
+
+                # Use peak intensity in first 12h (4 timesteps at 3h) as initial state.
+                # This mitigates the quantization bias from IBTrACS' 5-kt wind binning at
+                # TS-onset, which otherwise concentrates Genwind at exactly 35 kt 1-min.
+                # 12h chosen over 24h to avoid absorbing rapid intensification into the
+                # genesis distribution.
+                k = min(4, len(windlist[i]))
+                peak_idx = int(np.argmax(windlist[i][:k]))
+
+                genesis_wind[idx][month].append(windlist[i][peak_idx])
+                genesis_pressure[idx][month].append(preslist[i][peak_idx])
+                genesis_loc[idx][month].append([latlist[i][peak_idx], lonlist[i][peak_idx]])
                 genesis_loc_phase[idx][month][phase_name].append(
-                    [latlist[i][0], lonlist[i][0]]
+                    [latlist[i][peak_idx], lonlist[i][peak_idx]]
                 )
                 genesis_months_phase[idx][phase_name].append(month)
+                # Pressure tendency: use the step AFTER the peak, so dp1 represents the
+                # next-step evolution from the peak state.
+                if peak_idx + 1 < len(preslist[i]):
+                    genesis_dpres[idx][month].append(preslist[i][peak_idx + 1] - preslist[i][peak_idx])
+                else:
+                    # Storm too short to have a "next step" - use the previous step
+                    if peak_idx > 0:
+                        genesis_dpres[idx][month].append(preslist[i][peak_idx] - preslist[i][peak_idx - 1])
+                    else:
+                        # Single-timestep storm, no tendency
+                        genesis_dpres[idx][month].append(0.0)
+
                 poisson[idx][0] += 1
                 storms_per_phase[idx][phase] += 1
 
-                for j in range(1, len(latlist[i]) - 1):
+                for j in range(1 + peak_idx, len(latlist[i]) - 1):
                     lat_now = latlist[i][j]
                     lon_now = lonlist[i][j]
                     vws_val = np.nan
@@ -493,7 +514,7 @@ def TC_variables(
                     track[8][idx].append(vws_val)
                     track[9][idx].append(rh_val)
 
-                for j in range(1, len(preslist[i]) - 1):
+                for j in range(1 + peak_idx, len(preslist[i]) - 1):
                     if (
                         np.isnan(preslist[i][j - 1]) == False
                         and np.isnan(preslist[i][j]) == False
