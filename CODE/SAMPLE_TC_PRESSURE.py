@@ -639,7 +639,8 @@ def TC_pressure(
 
                     [Pmu, Pstd, DP0mu, DP0std, dpmin, dpmax] = EP
                     dp0 = np.random.normal(DP0mu, DP0std)
-                    dp1 = -1.0 * np.abs(dp0)
+                    # dp1 = -1.0 * np.abs(dp0)
+                    dp1 = dp0
 
                     pressure_list.append(p)
                     wind_list.append(vmax)
@@ -843,7 +844,7 @@ def TC_pressure(
                         i = 0
                         vmax = 0
 
-                    elif vmax < wind_threshold or p > Penv and i > 3:
+                    elif (vmax < wind_threshold or p > Penv) and i > 3:
                         TC_data = add_parameters_to_TC_data(
                             pressure_list,
                             wind_list,

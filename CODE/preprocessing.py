@@ -462,7 +462,7 @@ def TC_variables(
                 # TS-onset, which otherwise concentrates Genwind at exactly 35 kt 1-min.
                 # 12h chosen over 24h to avoid absorbing rapid intensification into the
                 # genesis distribution.
-                k = min(4, len(windlist[i]))
+                k = min(2, len(windlist[i]))
                 peak_idx = int(np.argmax(windlist[i][:k]))
 
                 genesis_wind[idx][month].append(windlist[i][peak_idx])
