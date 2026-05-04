@@ -137,6 +137,7 @@ def _run_single_job_forecast(
     job,
     years_per_loop,
     use_yearly=True,
+    outdir=None,
 ):
     """
     Worker function: generates one loop of synthetic storms.
@@ -263,7 +264,10 @@ def _run_single_job_forecast(
         f"STORM_DATA_IBTRACS_{basin}_FORECAST_m{member_num}"
         f"_{years_per_loop}_YEARS_{loop_idx}.txt"
     )
-    outpath = os.path.join(__location__, out)
+    if outdir is None:
+        outpath = os.path.join(__location__, out)
+    else:
+        outpath = os.path.join(__location__, outdir + "/" + out)
     if len(TC_data) > 0:
         TC_data = np.nan_to_num(TC_data, nan=0.0)
         np.savetxt(outpath, TC_data, fmt="%5s", delimiter=",")
@@ -292,6 +296,9 @@ def main():
         type=int,
         default=1000,
         help="Years per loop (each loop produces one output file)",
+    )
+    parser.add_argument(
+        "--outdir", type=str, default=None, help="Opt. for out dir of STORM"
     )
     parser.add_argument(
         "--loop",
@@ -359,6 +366,10 @@ def main():
         total_years = (
             args.years * args.loop * len(phases) * len(args.basins) * len(args.forecast)
         )
+    if args.outdir is not None:
+        full_outdir = os.path.join(__location__, args.outdir)
+        if not os.path.exists(full_outdir):
+            os.mkdir(full_outdir)
 
     print("=" * 70)
     print("SIENA-IH-STORM Parallel Generation")
@@ -384,12 +395,14 @@ def main():
             _run_single_job_forecast,
             years_per_loop=args.years,
             use_yearly=not args.no_yearly,
+            outdir=args.outdir,
         )
     else:
         worker_fn = partial(
             _run_single_job_historical,
             years_per_loop=args.years,
             use_yearly=not args.no_yearly,
+            outdir=args.outdir,
         )
 
     if n_workers == 1:
