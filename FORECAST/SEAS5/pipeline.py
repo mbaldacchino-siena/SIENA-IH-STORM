@@ -60,7 +60,7 @@ def seas5_anomaly_path(
 ) -> Path:
     suffix = "_pl" if is_pressure else ""
     return config.SEAS5_ANOMALY_DIR / (
-        f"seas5anom_{short_name}{suffix}_{min(months)}_{min(years)}-{max(months)}_{max(years)}.nc"
+        f"seas5anom_{short_name}{suffix}_{min(months):02d}_{min(years)}-{max(months):02d}_{max(years)}.nc"
     )
 
 
@@ -69,7 +69,7 @@ def corrected_path(
 ) -> Path:
     suffix = "_pl" if is_pressure else ""
     return config.CORRECTED_DIR / (
-        f"seas5corrected_{short_name}{suffix}_{min(months)}_{min(years)}-{max(months)}_{max(years)}.nc"
+        f"seas5corrected_{short_name}{suffix}_{min(months):02d}_{min(years)}-{max(months):02d}_{max(years)}.nc"
     )
 
 
