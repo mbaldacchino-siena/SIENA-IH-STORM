@@ -639,8 +639,8 @@ def TC_pressure(
 
                     [Pmu, Pstd, DP0mu, DP0std, dpmin, dpmax] = EP
                     dp0 = np.random.normal(DP0mu, DP0std)
-                    # dp1 = -1.0 * np.abs(dp0)
-                    dp1 = dp0
+                    dp1 = -1.0 * np.abs(dp0)
+                    # dp1 = dp0
 
                     pressure_list.append(p)
                     wind_list.append(vmax)
