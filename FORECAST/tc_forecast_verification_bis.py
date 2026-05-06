@@ -299,7 +299,7 @@ def load_ibtracs_na(
     return TCTracks.from_ibtracs_netcdf(
         provider=provider,
         year_range=(yr_min, yr_max),
-        basin=None,
+        basin="NA",
         genesis_basin="NA",
         rescale_windspeeds=rescale_windspeeds,
         estimate_missing=estimate_missing,
@@ -332,7 +332,6 @@ def _extract_track_features(track: xr.Dataset, mask: FastLandMask) -> dict:
     metric functions read from the returned dict.
     """
     # Wind unit conversion
-    tY = time()
     unit = str(track.attrs.get("max_sustained_wind_unit", "kn")).lower().strip()
     v_raw = np.asarray(track["max_sustained_wind"].values, dtype=float)
     if unit in ("kn", "kt", "knots", "knot"):
